@@ -1,0 +1,48 @@
+# Credentials & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+credentials.*
+secrets.*
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.whl
+
+# Virtual environments
+venv/
+.venv/
+env/
+.ciaenv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs & cache
+*.log
+.pytest_cache/
+.mypy_cache/
+*.sqlite
+*.db
+
+# Generated documents (user-specific output)
+generated_docs/
+
+# Claude Code internal
+CLAUDE.md
+claude_code_config.json
