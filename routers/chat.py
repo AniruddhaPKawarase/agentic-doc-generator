@@ -133,27 +133,20 @@ async def get_session_history(
     session_id: str,
     sessions=Depends(get_sessions),
 ):
-    """Return the conversation history for a session."""
-    from services.cache_service import CacheService
-    cache = sessions._cache
-    key = CacheService.session_key(session_id)
-    data = await cache.get(key)
+    """Return the conversation history for a session (cache → S3 fallback)."""
+    data = await sessions.get_history(session_id)
     if not data:
         raise HTTPException(status_code=404, detail="Session not found")
-    return {
-        "session_id": session_id,
-        "messages": data.get("messages", []),
-        "token_summary": data.get("token_summary", {}),
-    }
+    return data
 
 
 @router.get("/sessions/{session_id}/tokens")
 async def get_token_usage(
     session_id: str,
-    token_tracker=Depends(get_token_tracker),
+    sessions=Depends(get_sessions),
 ):
-    """Return cumulative token usage for a session."""
-    totals = await token_tracker.get_session_totals(session_id)
+    """Return cumulative token usage for a session (cache → S3 fallback)."""
+    totals = await sessions.get_token_totals(session_id)
     if not totals:
         raise HTTPException(status_code=404, detail="No token data for this session")
     return totals

@@ -11,7 +11,7 @@ Responsibilities:
 
 import logging
 import time
-from typing import Any
+from typing import Any, Optional
 
 from config import get_settings
 from models.schemas import TokenUsage
@@ -157,25 +157,71 @@ class TokenTracker:
     async def accumulate_session_tokens(
         self, session_id: str, usage: TokenUsage
     ) -> dict[str, Any]:
-        """Add usage to running session total stored in cache."""
+        """Add usage to running session total stored in cache + S3."""
         key = CacheService.token_key(session_id)
-        current = await self._cache.get(key) or {
-            "session_id": session_id,
-            "total_input": 0,
-            "total_output": 0,
-            "total_tokens": 0,
-            "total_cost_usd": 0.0,
-            "call_count": 0,
-        }
+        current = await self._cache.get(key)
+        if not current:
+            # Try S3 fallback
+            current = await self._load_tokens_s3(session_id)
+        if not current:
+            current = {
+                "session_id": session_id,
+                "total_input": 0,
+                "total_output": 0,
+                "total_tokens": 0,
+                "total_cost_usd": 0.0,
+                "call_count": 0,
+            }
         current["total_input"] += usage.input_tokens
         current["total_output"] += usage.output_tokens
         current["total_tokens"] += usage.total_tokens
         current["total_cost_usd"] = round(current["total_cost_usd"] + usage.cost_usd, 6)
         current["call_count"] += 1
         await self._cache.set(key, current, ttl=settings.session_ttl)
+        # Persist to S3 in background
+        import asyncio
+        asyncio.create_task(self._save_tokens_s3(session_id, current))
         return current
 
     async def get_session_totals(self, session_id: str) -> dict[str, Any]:
-        """Retrieve accumulated token stats for a session."""
+        """Retrieve accumulated token stats for a session (cache → S3)."""
         key = CacheService.token_key(session_id)
-        return await self._cache.get(key) or {}
+        data = await self._cache.get(key)
+        if not data:
+            data = await self._load_tokens_s3(session_id)
+            if data:
+                await self._cache.set(key, data, ttl=settings.session_ttl)
+        return data or {}
+
+    # -- S3 token persistence -------------------------------------------
+
+    async def _save_tokens_s3(self, session_id: str, data: dict) -> None:
+        if settings.storage_backend != "s3":
+            return
+        import asyncio, json, sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+        try:
+            from s3_utils.operations import upload_bytes
+            s3_key = f"{settings.s3_agent_prefix}/conversation_memory/tokens_{session_id}.json"
+            payload = json.dumps(data, default=str).encode("utf-8")
+            await asyncio.to_thread(upload_bytes, payload, s3_key, "application/json")
+        except Exception as e:
+            logger.debug("S3 token save failed for %s: %s", session_id, e)
+
+    async def _load_tokens_s3(self, session_id: str) -> Optional[dict]:
+        if settings.storage_backend != "s3":
+            return None
+        import asyncio, json, sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+        try:
+            from s3_utils.operations import download_bytes
+            s3_key = f"{settings.s3_agent_prefix}/conversation_memory/tokens_{session_id}.json"
+            raw = await asyncio.to_thread(download_bytes, s3_key)
+            if raw:
+                logger.info("Token data for %s loaded from S3 (cache miss)", session_id)
+                return json.loads(raw.decode("utf-8"))
+        except Exception as e:
+            logger.debug("S3 token load failed for %s: %s", session_id, e)
+        return None

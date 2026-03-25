@@ -5,6 +5,10 @@ Each session stores the last SESSION_MAX_MESSAGES turns.
 Older messages beyond the window are summarized into a "summary" prefix
 so context doesn't balloon indefinitely.
 
+Persistence: L1 cache → Redis (if available) → S3 (durable fallback).
+Without Redis, S3 is the only durable store. L1 is process-local and
+expires after 1 hour or on restart.
+
 Anti-hallucination memory design:
   - Rolling window keeps only recent verbatim messages (prevents stale context)
   - Older messages are summarized with trade/project metadata anchoring
@@ -13,15 +17,87 @@ Anti-hallucination memory design:
   - Groundedness scores are tracked per turn for trend detection
 """
 
+import asyncio
+import json
 import logging
+import sys
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from models.schemas import SessionContext, SessionMessage, TokenUsage
 from services.cache_service import CacheService
+from config import get_settings
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
+
+# Lazy S3 imports
+_s3_ready = False
+
+
+def _init_s3():
+    global _s3_ready
+    if not _s3_ready:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+        _s3_ready = True
+
+
+def _session_s3_key(session_id: str) -> str:
+    """Build S3 key for a session JSON file."""
+    return f"{settings.s3_agent_prefix}/conversation_memory/session_{session_id}.json"
+
+
+def _token_s3_key(session_id: str) -> str:
+    """Build S3 key for a token usage JSON file."""
+    return f"{settings.s3_agent_prefix}/conversation_memory/tokens_{session_id}.json"
+
+
+def _s3_enabled() -> bool:
+    return settings.storage_backend == "s3"
+
+
+def _save_to_s3(s3_key: str, data: dict) -> bool:
+    """Persist JSON data to S3 (synchronous — call via to_thread)."""
+    if not _s3_enabled():
+        return False
+    _init_s3()
+    try:
+        from s3_utils.operations import upload_bytes
+        payload = json.dumps(data, default=str).encode("utf-8")
+        return upload_bytes(payload, s3_key, content_type="application/json")
+    except Exception as e:
+        logger.debug("S3 save failed for %s: %s", s3_key, e)
+        return False
+
+
+def _load_from_s3(s3_key: str) -> Optional[dict]:
+    """Load JSON data from S3 (synchronous — call via to_thread)."""
+    if not _s3_enabled():
+        return None
+    _init_s3()
+    try:
+        from s3_utils.operations import download_bytes
+        raw = download_bytes(s3_key)
+        if raw:
+            return json.loads(raw.decode("utf-8"))
+    except Exception as e:
+        logger.debug("S3 load failed for %s: %s", s3_key, e)
+    return None
+
+
+def _delete_from_s3(s3_key: str) -> bool:
+    """Delete a JSON file from S3 (synchronous)."""
+    if not _s3_enabled():
+        return False
+    _init_s3()
+    try:
+        from s3_utils.operations import delete_object
+        return delete_object(s3_key)
+    except Exception as e:
+        logger.debug("S3 delete failed for %s: %s", s3_key, e)
+        return False
 
 
 class SessionService:
@@ -107,6 +183,40 @@ class SessionService:
 
     async def delete(self, session_id: str) -> None:
         await self._cache.delete(CacheService.session_key(session_id))
+        await asyncio.to_thread(_delete_from_s3, _session_s3_key(session_id))
+        await asyncio.to_thread(_delete_from_s3, _token_s3_key(session_id))
+
+    # -- Public accessors for routers ------------------------------------
+
+    async def get_history(self, session_id: str) -> Optional[dict]:
+        """
+        Return session history dict for the /history endpoint.
+        Tries cache first, then S3 fallback.
+        """
+        ctx = await self._load(session_id)
+        if not ctx:
+            return None
+        return {
+            "session_id": ctx.session_id,
+            "messages": [m.model_dump(mode="json") for m in ctx.messages],
+            "token_summary": ctx.token_summary.model_dump(mode="json"),
+        }
+
+    async def get_token_totals(self, session_id: str) -> Optional[dict]:
+        """
+        Return token totals for the /tokens endpoint.
+        Tries cache first, then S3 fallback (reads from session context).
+        """
+        # Try dedicated token cache key first
+        key = CacheService.token_key(session_id)
+        data = await self._cache.get(key)
+        if data and data.get("call_count", 0) > 0:
+            return data
+        # Fall back to session context (which has token_summary embedded)
+        ctx = await self._load(session_id)
+        if ctx and ctx.token_summary.call_count > 0:
+            return ctx.token_summary.model_dump(mode="json")
+        return None
 
     # -- Prompt helpers --------------------------------------------------
 
@@ -179,12 +289,26 @@ class SessionService:
     # -- Persistence -----------------------------------------------------
 
     async def _save(self, ctx: SessionContext) -> None:
+        """Save session to cache + S3 (durable fallback)."""
         key = CacheService.session_key(ctx.session_id)
-        await self._cache.set(key, ctx.model_dump(mode="json"), ttl=self._session_ttl)
+        data = ctx.model_dump(mode="json")
+        await self._cache.set(key, data, ttl=self._session_ttl)
+        # Persist to S3 in background (non-blocking)
+        asyncio.create_task(
+            asyncio.to_thread(_save_to_s3, _session_s3_key(ctx.session_id), data)
+        )
 
     async def _load(self, session_id: str) -> Optional[SessionContext]:
+        """Load session from cache; fall back to S3 if cache miss."""
         key = CacheService.session_key(session_id)
         data = await self._cache.get(key)
+        if not data:
+            # S3 fallback — durable storage survives restarts
+            data = await asyncio.to_thread(_load_from_s3, _session_s3_key(session_id))
+            if data:
+                # Repopulate cache from S3
+                await self._cache.set(key, data, ttl=self._session_ttl)
+                logger.info("Session %s loaded from S3 (cache miss)", session_id)
         if data:
             try:
                 return SessionContext(**data)
