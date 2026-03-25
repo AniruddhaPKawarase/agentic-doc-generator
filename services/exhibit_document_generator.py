@@ -165,10 +165,18 @@ class ExhibitDocumentGenerator:
                 trade,
                 filename,
             )
-            if upload_file(str(tmp_path), s3_key):
-                logger.info("S3 upload OK (exhibit): %s (%d bytes)", s3_key, size_bytes)
+            upload_ok = upload_file(str(tmp_path), s3_key)
+            if upload_ok:
+                logger.info(
+                    "S3 upload OK (exhibit): s3://%s/%s (%d bytes) | file_id=%s",
+                    settings.s3_bucket_name, s3_key, size_bytes, file_id,
+                )
             else:
-                logger.error("S3 upload FAILED (exhibit): %s", s3_key)
+                logger.error(
+                    "S3 upload FAILED (exhibit): s3://%s/%s | file_id=%s | "
+                    "Check AWS credentials, bucket permissions, and network connectivity.",
+                    settings.s3_bucket_name, s3_key, file_id,
+                )
 
             tmp_path.unlink(missing_ok=True)
             download_url = f"{settings.docs_base_url}/{file_id}/download"

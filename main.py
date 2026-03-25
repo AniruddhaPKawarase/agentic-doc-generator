@@ -18,6 +18,9 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv()  # Export .env values to os.environ (required by s3_utils)
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -112,6 +115,31 @@ async def lifespan(app: FastAPI):
     app.state.session_service = session_service
     app.state.token_tracker = token_tracker
     app.state.generation_agent = generation_agent
+
+    # ── S3 connectivity check (diagnostic) ───────────────────────
+    if settings.storage_backend == "s3":
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+            from s3_utils.client import get_s3_client
+            from s3_utils.config import get_s3_config
+            s3_cfg = get_s3_config()
+            s3_client = get_s3_client()
+            if s3_client:
+                logger.info(
+                    "S3 READY: bucket=%s, prefix=%s, region=%s",
+                    s3_cfg.bucket_name, s3_cfg.agent_prefix, s3_cfg.region,
+                )
+            else:
+                logger.error(
+                    "S3 CLIENT FAILED — documents will NOT upload. "
+                    "STORAGE_BACKEND=%s, bucket=%s, has_creds=%s",
+                    s3_cfg.storage_backend, s3_cfg.bucket_name, s3_cfg.has_credentials,
+                )
+        except Exception as e:
+            logger.error("S3 startup check failed: %s", e)
+    else:
+        logger.info("Storage backend: local (S3 disabled)")
 
     logger.info("All services initialised — API ready")
 

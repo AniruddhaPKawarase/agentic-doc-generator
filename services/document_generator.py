@@ -116,10 +116,19 @@ class DocumentGenerator:
                 trade,
                 filename,
             )
-            if upload_file(str(tmp_path), s3_key):
-                logger.info("S3 upload OK: %s (%d bytes)", s3_key, size_bytes)
+            upload_ok = upload_file(str(tmp_path), s3_key)
+            if upload_ok:
+                logger.info(
+                    "S3 upload OK: s3://%s/%s (%d bytes) | file_id=%s",
+                    settings.s3_bucket_name, s3_key, size_bytes, file_id,
+                )
             else:
-                logger.error("S3 upload FAILED: %s", s3_key)
+                logger.error(
+                    "S3 upload FAILED: s3://%s/%s | file_id=%s | "
+                    "Check AWS credentials, bucket permissions, and network connectivity. "
+                    "Verify STORAGE_BACKEND, S3_BUCKET_NAME, AWS_ACCESS_KEY_ID are in os.environ.",
+                    settings.s3_bucket_name, s3_key, file_id,
+                )
 
             # Clean up temp file — S3 is the only copy now
             tmp_path.unlink(missing_ok=True)
