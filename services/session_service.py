@@ -46,12 +46,15 @@ def _init_s3():
 
 def _session_s3_key(session_id: str) -> str:
     """Build S3 key for a session JSON file."""
-    return f"{settings.s3_agent_prefix}/conversation_memory/session_{session_id}.json"
+    # Avoid double prefix: session_id may already start with "session_"
+    fname = session_id if session_id.startswith("session_") else f"session_{session_id}"
+    return f"{settings.s3_agent_prefix}/conversation_memory/{fname}.json"
 
 
 def _token_s3_key(session_id: str) -> str:
     """Build S3 key for a token usage JSON file."""
-    return f"{settings.s3_agent_prefix}/conversation_memory/tokens_{session_id}.json"
+    fname = session_id if session_id.startswith("session_") else f"session_{session_id}"
+    return f"{settings.s3_agent_prefix}/conversation_memory/tokens_{fname}.json"
 
 
 def _s3_enabled() -> bool:
