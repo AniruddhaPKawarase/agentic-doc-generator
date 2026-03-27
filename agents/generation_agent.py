@@ -520,21 +520,21 @@ class GenerationAgent:
                         input_messages.append({"role": role, "content": str(msg.get("content", ""))})
                 input_messages.append({"role": "user", "content": final_user_message})
 
-                async with self._client.chat.completions.stream(
+                stream = await self._client.chat.completions.create(
                     model=settings.openai_model,
                     messages=input_messages,
                     max_tokens=settings.max_output_tokens,
-                ) as stream:
-                    async for chunk in stream:
-                        delta = chunk.choices[0].delta.content if chunk.choices else None
-                        if delta:
-                            answer_chunks.append(delta)
-                            yield {"type": "token", "delta": delta}
-
-                    final_completion = await stream.get_final_completion()
-                    if final_completion.usage:
-                        input_tokens = final_completion.usage.prompt_tokens
-                        output_tokens = final_completion.usage.completion_tokens
+                    stream=True,
+                    stream_options={"include_usage": True},
+                )
+                async for chunk in stream:
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        delta = chunk.choices[0].delta.content
+                        answer_chunks.append(delta)
+                        yield {"type": "token", "delta": delta}
+                    if chunk.usage:
+                        input_tokens = chunk.usage.prompt_tokens
+                        output_tokens = chunk.usage.completion_tokens
 
             except Exception as exc:
                 logger.error("Streaming generation failed: %s", exc)

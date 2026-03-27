@@ -22,13 +22,13 @@ class Settings(BaseSettings):
     api_base_url: str = "https://mongo.ifieldsmart.com"
     summary_by_trade_path: str = "/api/drawingText/summaryByTrade"
     api_auth_token: str = ""
-    api_timeout_seconds: int = 15
+    api_timeout_seconds: int = 30
 
     # ── Pagination ────────────────────────────────────────
     api_page_size: int = 500
     max_pagination_pages: int = 200
     max_summary_records: int = 0
-    parallel_fetch_concurrency: int = 30
+    parallel_fetch_concurrency: int = 10
 
     # ── Redis ─────────────────────────────────────────────
     redis_url: str = "redis://localhost:6379/0"
