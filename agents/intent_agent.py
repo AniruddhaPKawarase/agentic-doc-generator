@@ -157,20 +157,14 @@ Return only JSON:
   "confidence": <0.0-1.0>
 }}"""
 
-        response = await self._client.responses.create(
+        response = await self._client.chat.completions.create(
             model=settings.openai_model,
-            input=[{"role": "user", "content": prompt}],
-            max_output_tokens=settings.intent_max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=settings.intent_max_tokens,
+            response_format={"type": "json_object"},
         )
 
-        # Legacy Claude intent fallback retained for reference:
-        # response = self._client.messages.create(
-        #     model=settings.claude_model,
-        #     max_tokens=settings.intent_max_tokens,
-        #     messages=[{"role": "user", "content": prompt}],
-        # )
-
-        raw = self._extract_output_text(response).strip()
+        raw = (response.choices[0].message.content or "").strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
         if not json_match:
             return keyword_result

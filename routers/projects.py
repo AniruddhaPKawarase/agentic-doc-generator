@@ -32,34 +32,13 @@ async def get_project_context(
     Load available trades, CSI divisions, and text count for a project.
     Fully cached — safe to call on every project switch.
     """
-    try:
-        from services.cache_service import CacheService
-
-        cache_key = CacheService.api_key("project_context", project_id)
-        cached = await cache.get(cache_key)
-        if cached:
-            return ProjectContextResponse(**cached, cached=True)
-
-        # Parallel fetch
-        import asyncio
-        trades_task = api_client.get_unique_trades(project_id)
-        csi_task = api_client.get_unique_csi_divisions(project_id)
-        text_count_task = api_client.get_unique_text_count_hint(project_id)
-
-        trades, csi_divisions, text_count = await asyncio.gather(
-            trades_task, csi_task, text_count_task
-        )
-
-        result = ProjectContextResponse(
-            project_id=project_id,
-            trades=[t for t in trades if t],
-            csi_divisions=[c for c in csi_divisions if c],
-            total_text_items=int(text_count),
-            cached=False,
-        )
-
-        await cache.set(cache_key, result.model_dump(), ttl=1800)
-        return result
-
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+    # Note: get_unique_trades/csi_divisions/text_count_hint methods were removed
+    # in the Single-API Refactor (2026-03-09). This endpoint now returns a stub
+    # response. The frontend should derive trades from the summaryByTrade API.
+    return ProjectContextResponse(
+        project_id=project_id,
+        trades=[],
+        csi_divisions=[],
+        total_text_items=0,
+        cached=False,
+    )

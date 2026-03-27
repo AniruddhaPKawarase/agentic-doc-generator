@@ -4,6 +4,7 @@ routers/documents.py  —  Document download endpoints.
 When STORAGE_BACKEND=s3: serves documents via S3 presigned URLs (no local files).
 When STORAGE_BACKEND=local: serves from local docs_dir (original behavior).
 """
+import asyncio
 import sys
 from pathlib import Path
 
@@ -86,9 +87,9 @@ async def download_document(file_id: str):
 
     # --- S3 MODE: presigned URL redirect ---
     if settings.storage_backend == "s3":
-        s3_key = _find_s3_key(file_id)
+        s3_key = await asyncio.to_thread(_find_s3_key, file_id)
         if s3_key:
-            url = _s3_presigned_url(s3_key)
+            url = await asyncio.to_thread(_s3_presigned_url, s3_key)
             if url:
                 return RedirectResponse(url=url)
         raise HTTPException(status_code=404, detail="Document not found in S3")
@@ -112,9 +113,9 @@ async def document_info(file_id: str):
 
     # --- S3 MODE ---
     if settings.storage_backend == "s3":
-        s3_key = _find_s3_key(file_id)
+        s3_key = await asyncio.to_thread(_find_s3_key, file_id)
         if s3_key:
-            size = _s3_object_size(s3_key)
+            size = await asyncio.to_thread(_s3_object_size, s3_key)
             return {
                 "file_id": file_id,
                 "filename": s3_key.split("/")[-1],
