@@ -152,9 +152,13 @@ class GenerationAgent:
         t_start = time.perf_counter()
         t: dict[str, int] = {}
         pipeline_log = self._tokens.create_pipeline_log()
+        set_ids = request.set_ids or None
 
         # -- Phase 1: session + pre-intent cache + project metadata -- all parallel
-        pre_cache_key = CacheService.query_key(request.project_id, "", request.query)
+        set_ids_suffix = ""
+        if set_ids:
+            set_ids_suffix = ":sets:" + "_".join(str(s) for s in sorted(str(s) for s in set_ids))
+        pre_cache_key = CacheService.query_key(request.project_id, "" + set_ids_suffix, request.query)
         session, cached_raw, metadata, _name_result = await asyncio.gather(
             self._sessions.get_or_create(request.session_id, request.project_id),
             self._cache.get(pre_cache_key),
@@ -177,7 +181,7 @@ class GenerationAgent:
         # -- Phase 2: keyword intent (sync) -> context + full intent + cache -- parallel
         prelim_intent = self._intent.detect_sync(request.query, available_trades)
         prelim_cache_key = CacheService.query_key(
-            request.project_id, prelim_intent.trade, request.query
+            request.project_id, prelim_intent.trade + set_ids_suffix, request.query
         )
 
         (context_block, _ctx_stats), intent, prelim_cached = await asyncio.gather(
@@ -186,6 +190,7 @@ class GenerationAgent:
                 prelim_intent,
                 available_trades=available_trades,
                 project_csi=project_csi,
+                set_ids=set_ids,
             ),
             self._intent.detect(request.query, available_trades),
             self._cache.get(prelim_cache_key),
@@ -199,7 +204,7 @@ class GenerationAgent:
         if prelim_cached:
             return await self._response_from_cache(prelim_cached, session, request.query, t_start, project_display_name)
 
-        cache_key = CacheService.query_key(request.project_id, intent.trade, request.query)
+        cache_key = CacheService.query_key(request.project_id, intent.trade + set_ids_suffix, request.query)
 
         if intent.trade != prelim_intent.trade:
             trade_cached = await self._cache.get(cache_key)
@@ -210,6 +215,7 @@ class GenerationAgent:
                 intent,
                 available_trades=available_trades,
                 project_csi=project_csi,
+                set_ids=set_ids,
             )
             t["context_rebuild"] = int((time.perf_counter() - t_start) * 1000)
             logger.info(
@@ -217,14 +223,45 @@ class GenerationAgent:
                 intent.trade, _ctx_stats.get("unique_drawings", 0),
             )
 
+        # -- Empty-result check for set_ids filter -------------------------
+        set_names: list[str] = _ctx_stats.get("set_names", [])
+        if set_ids and _ctx_stats.get("total_records", 0) == 0:
+            pipeline_ms = int((time.perf_counter() - t_start) * 1000)
+            return ChatResponse(
+                session_id=session.session_id,
+                project_name=project_display_name,
+                answer=(
+                    f"No records found for trade **{intent.trade}** with "
+                    f"set ID(s) **{', '.join(str(s) for s in set_ids)}** "
+                    f"in project {request.project_id}. "
+                    "Please verify the trade name and set ID(s) are correct."
+                ),
+                set_ids=set_ids,
+                set_names=[],
+                intent=intent,
+                pipeline_ms=pipeline_ms,
+                cached=False,
+            )
+
         # -- Build system prompt and user message -------------------------
         task_template = TASK_DESCRIPTIONS.get(intent.document_type, TASK_DESCRIPTIONS["generate"])
         task_description = task_template.format(trade=intent.trade or "General")
+
+        # Include set metadata in the metadata block when filtering by set
+        set_metadata = ""
+        if set_ids and set_names:
+            set_metadata = (
+                f"\nSet Filter: {', '.join(set_names)} "
+                f"(IDs: {', '.join(str(s) for s in set_ids)})\n"
+            )
+
         metadata_block = self._data._builder.build_metadata_summary_sync(
             request.project_id,
             available_trades,
             project_csi,
         )
+        if set_metadata:
+            metadata_block += set_metadata
 
         # Inject authoritative drawing-number anchor to prevent hallucination.
         # All drawing numbers are extracted programmatically from the fetched
@@ -287,6 +324,8 @@ class GenerationAgent:
             project_name=project_display_name,
             trade=intent.trade or "General",
             document_type=intent.document_type,
+            set_ids=set_ids,
+            set_names=set_names,
         ) if request.generate_document else _noop_coro()
 
         followup_coro = self._generate_follow_up_questions(
@@ -320,6 +359,8 @@ class GenerationAgent:
             session_id=session.session_id,
             project_name=project_display_name,
             answer=answer,
+            set_ids=set_ids,
+            set_names=set_names,
             document=generated_doc,
             intent=intent,
             token_usage=usage,
@@ -382,9 +423,13 @@ class GenerationAgent:
         """
         t_start = time.perf_counter()
         pipeline_log = self._tokens.create_pipeline_log()
+        set_ids = request.set_ids or None
 
         # -- Phase 1: parallel session + cache + metadata ------------------
-        pre_cache_key = CacheService.query_key(request.project_id, "", request.query)
+        set_ids_suffix = ""
+        if set_ids:
+            set_ids_suffix = ":sets:" + "_".join(str(s) for s in sorted(str(s) for s in set_ids))
+        pre_cache_key = CacheService.query_key(request.project_id, "" + set_ids_suffix, request.query)
         session, cached_raw, metadata, _name_result = await asyncio.gather(
             self._sessions.get_or_create(request.session_id, request.project_id),
             self._cache.get(pre_cache_key),
@@ -417,7 +462,7 @@ class GenerationAgent:
         # -- Phase 2: keyword intent + context + cache -- parallel ---------
         prelim_intent = self._intent.detect_sync(request.query, available_trades)
         prelim_cache_key = CacheService.query_key(
-            request.project_id, prelim_intent.trade, request.query
+            request.project_id, prelim_intent.trade + set_ids_suffix, request.query
         )
 
         (context_block, _ctx_stats), intent, prelim_cached = await asyncio.gather(
@@ -426,6 +471,7 @@ class GenerationAgent:
                 prelim_intent,
                 available_trades=available_trades,
                 project_csi=project_csi,
+                set_ids=set_ids,
             ),
             self._intent.detect(request.query, available_trades),
             self._cache.get(prelim_cache_key),
@@ -450,7 +496,7 @@ class GenerationAgent:
             return
 
         if intent.trade != prelim_intent.trade:
-            cache_key_final = CacheService.query_key(request.project_id, intent.trade, request.query)
+            cache_key_final = CacheService.query_key(request.project_id, intent.trade + set_ids_suffix, request.query)
             trade_cached = await self._cache.get(cache_key_final)
             if trade_cached:
                 response = ChatResponse(**trade_cached)
@@ -470,9 +516,33 @@ class GenerationAgent:
                 intent,
                 available_trades=available_trades,
                 project_csi=project_csi,
+                set_ids=set_ids,
             )
 
-        cache_key = CacheService.query_key(request.project_id, intent.trade, request.query)
+        cache_key = CacheService.query_key(request.project_id, intent.trade + set_ids_suffix, request.query)
+
+        # -- Empty-result check for set_ids filter (streaming) ----------------
+        set_names_stream: list[str] = _ctx_stats.get("set_names", [])
+        if set_ids and _ctx_stats.get("total_records", 0) == 0:
+            error_msg = (
+                f"No records found for trade **{intent.trade}** with "
+                f"set ID(s) **{', '.join(str(s) for s in set_ids)}** "
+                f"in project {request.project_id}. "
+                "Please verify the trade name and set ID(s) are correct."
+            )
+            yield {"type": "token", "delta": error_msg}
+            response = ChatResponse(
+                session_id=session.session_id,
+                project_name=project_display_name,
+                answer=error_msg,
+                set_ids=set_ids,
+                set_names=[],
+                intent=intent,
+                pipeline_ms=int((time.perf_counter() - t_start) * 1000),
+                cached=False,
+            )
+            yield {"type": "done", "response": response.model_dump(mode="json")}
+            return
 
         # Emit metadata event
         yield {"type": "metadata", "intent": intent.model_dump(), "trade": intent.trade}
@@ -480,9 +550,20 @@ class GenerationAgent:
         # -- Build prompts -------------------------------------------------
         task_template = TASK_DESCRIPTIONS.get(intent.document_type, TASK_DESCRIPTIONS["generate"])
         task_description = task_template.format(trade=intent.trade or "General")
+
+        set_metadata_stream = ""
+        if set_ids and set_names_stream:
+            set_metadata_stream = (
+                f"\nSet Filter: {', '.join(set_names_stream)} "
+                f"(IDs: {', '.join(str(s) for s in set_ids)})\n"
+            )
+
         metadata_block = self._data._builder.build_metadata_summary_sync(
             request.project_id, available_trades, project_csi
         )
+        if set_metadata_stream:
+            metadata_block += set_metadata_stream
+
         drawing_anchor = self._build_drawing_anchor(_ctx_stats.get("all_drawing_numbers", []))
         system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
             trade=intent.trade or "General",
@@ -570,6 +651,8 @@ class GenerationAgent:
             project_name=project_display_name,
             trade=intent.trade or "General",
             document_type=intent.document_type,
+            set_ids=set_ids,
+            set_names=set_names_stream,
         ) if request.generate_document else _noop_coro()
 
         followup_coro = self._generate_follow_up_questions(
@@ -601,6 +684,8 @@ class GenerationAgent:
             session_id=session.session_id,
             project_name=project_display_name,
             answer=answer,
+            set_ids=set_ids,
+            set_names=set_names_stream,
             document=generated_doc,
             intent=intent,
             token_usage=usage,

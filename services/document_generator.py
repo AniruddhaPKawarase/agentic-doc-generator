@@ -47,6 +47,8 @@ class DocumentGenerator:
         document_type: str,
         project_name: str = "",
         title: str = None,
+        set_ids: list = None,
+        set_names: list = None,
     ) -> GeneratedDocument:
         """
         Parse markdown content and produce a Word document (async entry point).
@@ -64,6 +66,8 @@ class DocumentGenerator:
             document_type=document_type,
             project_name=project_name,
             title=title,
+            set_ids=set_ids,
+            set_names=set_names,
         )
 
     def generate_sync(
@@ -74,6 +78,8 @@ class DocumentGenerator:
         document_type: str,
         project_name: str = "",
         title: str = None,
+        set_ids: list = None,
+        set_names: list = None,
     ) -> GeneratedDocument:
         """
         Synchronous document builder — safe to call from a thread pool.
@@ -84,17 +90,25 @@ class DocumentGenerator:
 
         doc = Document()
         self._configure_document(doc)
-        self._add_header(doc, display_name, trade, document_type, title)
+        self._add_header(
+            doc, display_name, trade, document_type, title,
+            set_ids=set_ids, set_names=set_names,
+        )
         self._parse_and_add_content(doc, content)
-        self._add_footer(doc, display_name, trade)
+        self._add_footer(doc, display_name, trade, set_names=set_names)
 
         # Build filename with project name slug
         # e.g. scope_electrical_GranvilleHotel_7298_a1b2c3d4.docx
+        # With set_ids: scope_electrical_set4730_GranvilleHotel_7298_a1b2c3d4.docx
         file_id = str(uuid.uuid4())
         safe_trade = re.sub(r"[^\w\-]", "_", trade)
         safe_type = re.sub(r"[^\w\-]", "_", document_type)
         name_slug = self._project_name_slug(display_name, project_id)
-        filename = f"{safe_type}_{safe_trade}_{name_slug}_{project_id}_{file_id[:8]}.docx"
+
+        set_slug = ""
+        if set_ids:
+            set_slug = "set" + "_".join(str(s) for s in set_ids) + "_"
+        filename = f"{safe_type}_{safe_trade}_{set_slug}{name_slug}_{project_id}_{file_id[:8]}.docx"
         # --- S3 MODE: save to temp, upload to S3, delete local ---
         if settings.storage_backend == "s3":
             import tempfile
@@ -196,7 +210,8 @@ class DocumentGenerator:
         style.font.size = Pt(11)
 
     def _add_header(
-        self, doc: Document, display_name: str, trade: str, document_type: str, title: str = None
+        self, doc: Document, display_name: str, trade: str, document_type: str,
+        title: str = None, set_ids: list = None, set_names: list = None,
     ) -> None:
         """Add a styled document header block."""
         # Company name / system name
@@ -215,12 +230,19 @@ class DocumentGenerator:
         run.font.color.rgb = RGBColor(0x1E, 0x3A, 0x5F)
 
         # Metadata row — shows "Project: Granville Hotel (ID: 7298)" everywhere
+        meta_parts = [
+            f"Project: {display_name}",
+            f"Trade: {trade}",
+        ]
+        if set_names:
+            meta_parts.append(f"Set: {', '.join(set_names)}")
+        elif set_ids:
+            meta_parts.append(f"Set ID(s): {', '.join(str(s) for s in set_ids)}")
+        meta_parts.append(f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+
         meta_para = doc.add_paragraph()
         meta_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
-        meta_run = meta_para.add_run(
-            f"Project: {display_name}  •  Trade: {trade}  •  "
-            f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
-        )
+        meta_run = meta_para.add_run("  •  ".join(meta_parts))
         meta_run.font.size = Pt(9)
         meta_run.font.color.rgb = RGBColor(0x6B, 0x72, 0x80)
 
@@ -320,16 +342,23 @@ class DocumentGenerator:
 
         doc.add_paragraph()  # spacing after table
 
-    def _add_footer(self, doc: Document, display_name: str, trade: str) -> None:
+    def _add_footer(self, doc: Document, display_name: str, trade: str, set_names: list = None) -> None:
         """Add document footer with metadata."""
         section = doc.sections[0]
         footer = section.footer
         para = footer.paragraphs[0]
         para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = para.add_run(
-            f"iFieldSmart Construction Intelligence  •  {display_name}  •  "
-            f"Trade: {trade}  •  AI-generated — verify against source drawings"
-        )
+
+        footer_parts = [
+            "iFieldSmart Construction Intelligence",
+            display_name,
+            f"Trade: {trade}",
+        ]
+        if set_names:
+            footer_parts.append(f"Set: {', '.join(set_names)}")
+        footer_parts.append("AI-generated — verify against source drawings")
+
+        run = para.add_run("  •  ".join(footer_parts))
         run.font.size = Pt(8)
         run.font.color.rgb = RGBColor(0x9C, 0xA3, 0xAF)
 

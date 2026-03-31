@@ -62,9 +62,13 @@ class ContextBuilder:
         csi_divisions: list[str],
         user_query: str,
         token_budget: int = None,
+        set_ids: list = None,
     ) -> tuple[str, dict[str, int]]:
         """
         Fetch records and build a structured context string for LLM ingestion.
+
+        When set_ids is provided, uses summaryByTradeAndSet API per setId and
+        merges results. Otherwise uses summaryByTrade (existing behavior).
 
         Returns:
           context_str — grouped drawing notes block with drawing index
@@ -73,7 +77,15 @@ class ContextBuilder:
         budget = token_budget or settings.max_context_tokens
         stats: dict[str, Any] = {}
 
-        records = await self._api.get_summary_by_trade(project_id, trade)
+        set_names: list[str] = []
+        if set_ids:
+            records, set_names = await self._api.get_summary_by_trade_and_set(
+                project_id, trade, set_ids,
+            )
+            stats["set_ids"] = set_ids
+            stats["set_names"] = set_names
+        else:
+            records = await self._api.get_summary_by_trade(project_id, trade)
         stats["total_records"] = len(records)
 
         if not records:
@@ -115,6 +127,7 @@ class ContextBuilder:
             trade=trade,
             total_records=len(records),
             token_budget=effective_budget,
+            set_names=set_names,
         )
 
         raw_tokens = count_tokens(context)
@@ -169,6 +182,7 @@ class ContextBuilder:
         trade: str,
         total_records: int,
         token_budget: int,
+        set_names: list[str] = None,
     ) -> tuple[str, int]:
         """
         Try each note_max_chars level until context fits in token_budget.
@@ -193,6 +207,7 @@ class ContextBuilder:
                 trade=trade,
                 total_records=total_records,
                 note_max_chars=note_max,
+                set_names=set_names,
             )
             if count_tokens(context) <= token_budget:
                 return context, note_max
@@ -203,6 +218,7 @@ class ContextBuilder:
             trade=trade,
             total_records=total_records,
             note_max_chars=_ADAPTIVE_NOTE_LEVELS[-1],
+            set_names=set_names,
         )
         logger.warning(
             "Context exceeds budget even at note_max=%d chars — "
@@ -217,6 +233,7 @@ class ContextBuilder:
         trade: str,
         total_records: int,
         note_max_chars: int,
+        set_names: list[str] = None,
     ) -> str:
         """
         Build the full context block for one compression level.
@@ -241,8 +258,12 @@ class ContextBuilder:
         no_dn_recs = grouped.get("__NO_DRAWING__", [])
 
         # --- Drawing index: compact, always present, used as LLM anchor ---
+        set_suffix = ""
+        if set_names:
+            set_suffix = f" | Sets: {', '.join(set_names)}"
+
         index_lines = [
-            f"## Drawing Number Index — Trade: {trade}",
+            f"## Drawing Number Index — Trade: {trade}{set_suffix}",
             f"## Total: {total_records} records across {len(real_drawing_numbers)} drawings",
             "## Drawing Numbers: " + ", ".join(real_drawing_numbers),
             "",
@@ -250,7 +271,7 @@ class ContextBuilder:
 
         # --- Per-drawing detail blocks ---
         detail_lines: list[str] = [
-            f"## Drawing Notes — Trade: {trade}",
+            f"## Drawing Notes — Trade: {trade}{set_suffix}",
             "",
         ]
 

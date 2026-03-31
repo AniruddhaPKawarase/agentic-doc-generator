@@ -6,7 +6,7 @@ Data flow: API responses → DrawingRecord → filtered context → LLM → Chat
 
 from __future__ import annotations
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Optional, Union
 from pydantic import BaseModel, Field
 import uuid
 
@@ -161,6 +161,12 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = Field(None, description="Pass existing session ID to continue conversation")
     user_id: Optional[str] = Field(None, description="Optional user identifier")
     generate_document: bool = Field(True, description="Whether to generate a .docx file")
+    set_ids: Optional[list[Union[int, str]]] = Field(
+        None,
+        description="Optional list of set IDs to filter drawings. "
+                    "Uses summaryByTradeAndSet API when provided. "
+                    "Omit or pass null to use summaryByTrade (existing behavior).",
+    )
 
 
 class ChatResponse(BaseModel):
@@ -168,6 +174,8 @@ class ChatResponse(BaseModel):
     session_id: str
     project_name: str = ""              # "Granville Hotel (ID: 7298)" or fallback
     answer: str                         # LLM-generated answer (markdown)
+    set_ids: Optional[list[Union[int, str]]] = Field(None, description="Set IDs used for filtering (echo of request)")
+    set_names: list[str] = Field(default_factory=list, description="Set names extracted from API response")
     document: Optional[GeneratedDocument] = None
     intent: Optional[IntentResult] = None
     token_usage: TokenUsage = Field(default_factory=TokenUsage)

@@ -41,12 +41,15 @@ class DataAgent:
         *,
         available_trades: Optional[list[str]] = None,   # kept for interface compat
         project_csi: Optional[list[str]] = None,        # kept for interface compat
+        set_ids: Optional[list] = None,
     ) -> tuple[str, dict]:
         """
         Build the compressed context block for (project_id, trade).
 
         available_trades and project_csi are accepted but ignored —
         they are kept so GenerationAgent needs no changes to its call sites.
+
+        When set_ids is provided, uses summaryByTradeAndSet API per setId.
 
         Returns:
           context_str  — text block for the LLM prompt
@@ -60,6 +63,7 @@ class DataAgent:
             csi_divisions=intent.csi_divisions,
             user_query=intent.raw_query,
             token_budget=budget,
+            set_ids=set_ids,
         )
 
         stats["trade"] = intent.trade

@@ -1,10 +1,11 @@
 """
-Async HTTP client — single summaryByTrade endpoint with PARALLEL pagination.
+Async HTTP client — summaryByTrade + summaryByTradeAndSet endpoints with PARALLEL pagination.
 
-All project drawing-note data is retrieved through:
+Drawing-note data is retrieved through one of two endpoints:
   GET /api/drawingText/summaryByTrade?projectId={id}&trade={trade}
+  GET /api/drawingText/summaryByTradeAndSet?projectId={id}&trade={trade}&setId={setId}
 
-Response shape:
+Response shape (identical for both):
   { "success": true, "data": { "list": [ {_id, projectId, setName, setTrade,
     drawingName, drawingTitle, text, csi_division, trades}, ... ] } }
 
@@ -35,7 +36,7 @@ import asyncio
 import logging
 import math
 import time
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import httpx
 
@@ -110,15 +111,102 @@ class APIClient:
         await self._cache.set(cache_key, records, ttl=settings.cache_ttl_summary_data)
         return records
 
+    async def get_summary_by_trade_and_set(
+        self,
+        project_id: int,
+        trade: str,
+        set_ids: list[Union[int, str]],
+        bypass_cache: bool = False,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """
+        Fetch drawing-note summaries filtered by trade AND setId(s).
+
+        For multiple set_ids, fires parallel API calls (one per setId) and
+        merges results with _id deduplication.
+
+        Returns:
+          (records, set_names) — records is the merged list; set_names is the
+          list of unique setName values extracted from the response data.
+        """
+        set_ids_key = "_".join(str(s) for s in sorted(str(s) for s in set_ids))
+        cache_key = CacheService.api_key("summary_set", project_id, f"{trade.lower()}:{set_ids_key}")
+        if not bypass_cache:
+            cached = await self._cache.get(cache_key)
+            if cached is not None:
+                records = cached.get("records", [])
+                set_names = cached.get("set_names", [])
+                logger.debug(
+                    "Cache hit summary_set project=%s trade=%s set_ids=%s (%d records)",
+                    project_id, trade, set_ids, len(records),
+                )
+                return records, set_names
+
+        # Fire parallel fetches — one per setId
+        async def fetch_one_set(set_id: Union[int, str]) -> list[dict[str, Any]]:
+            return await self._fetch_all_pages(
+                project_id,
+                trade,
+                set_id=set_id,
+            )
+
+        results = await asyncio.gather(*[fetch_one_set(sid) for sid in set_ids])
+
+        # Merge and dedup by _id
+        seen_ids: set[str] = set()
+        merged: list[dict[str, Any]] = []
+        set_names_set: set[str] = set()
+
+        for result_batch in results:
+            for rec in result_batch:
+                rid = rec.get("_id", "")
+                if rid and rid in seen_ids:
+                    continue
+                if rid:
+                    seen_ids.add(rid)
+                merged.append(rec)
+                sn = (rec.get("setName") or "").strip()
+                if sn:
+                    set_names_set.add(sn)
+
+        set_names = sorted(set_names_set)
+
+        cap = settings.max_summary_records
+        if cap and len(merged) > cap:
+            logger.info(
+                "Capping %d records to %d for project=%s trade=%s set_ids=%s",
+                len(merged), cap, project_id, trade, set_ids,
+            )
+            merged = merged[:cap]
+
+        await self._cache.set(
+            cache_key,
+            {"records": merged, "set_names": set_names},
+            ttl=settings.cache_ttl_summary_data,
+        )
+
+        logger.info(
+            "summaryByTradeAndSet project=%s trade=%s set_ids=%s → %d records, sets=%s",
+            project_id, trade, set_ids, len(merged), set_names,
+        )
+        return merged, set_names
+
     async def fetch_project_metadata(self, project_id: int) -> dict[str, Any]:
         """Returns a lightweight metadata stub — trade detection is keyword-only."""
         return {"trades": [], "csi_divisions": []}
 
     # ── Internal helpers ──────────────────────────────────────────────
 
-    async def _fetch_all_pages(self, project_id: int, trade: str) -> list[dict[str, Any]]:
+    async def _fetch_all_pages(
+        self,
+        project_id: int,
+        trade: str,
+        set_id: Optional[Union[int, str]] = None,
+    ) -> list[dict[str, Any]]:
         """
-        Fetch ALL records from summaryByTrade using parallel batch pagination.
+        Fetch ALL records using parallel batch pagination.
+
+        When set_id is None, uses summaryByTrade endpoint.
+        When set_id is provided, uses summaryByTradeAndSet endpoint.
 
         Algorithm (v3 — empty-page termination, immune to wrong API total):
           1. Fetch page 1 serially → discover API page size.
@@ -136,12 +224,17 @@ class APIClient:
             logger.error("HTTP client not initialized — call connect() first.")
             return []
 
-        path = settings.summary_by_trade_path
+        if set_id is not None:
+            path = settings.summary_by_trade_and_set_path
+        else:
+            path = settings.summary_by_trade_path
         if not path.startswith("/"):
             path = f"/{path}"
 
         t0 = time.perf_counter()
         base_params: dict[str, Any] = {"projectId": project_id, "trade": trade}
+        if set_id is not None:
+            base_params["setId"] = set_id
 
         # ── Page 1: serial — discover API's actual page size ────────────
         try:

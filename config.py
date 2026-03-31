@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     # ── MongoDB API ───────────────────────────────────────
     api_base_url: str = "https://mongo.ifieldsmart.com"
     summary_by_trade_path: str = "/api/drawingText/summaryByTrade"
+    summary_by_trade_and_set_path: str = "/api/drawingText/summaryByTradeAndSet"
     api_auth_token: str = ""
     api_timeout_seconds: int = 30
 
