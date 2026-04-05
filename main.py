@@ -48,6 +48,7 @@ from agents.intent_agent import IntentAgent
 from routers.chat import router as chat_router
 from routers.documents import router as documents_router
 from routers.projects import router as projects_router
+from scope_pipeline.routers.scope_gap import router as scope_gap_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -141,6 +142,62 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Storage backend: local (S3 disabled)")
 
+    # ── Scope Gap Pipeline (Phase 11) ─────────────────────────
+    from scope_pipeline.config import get_pipeline_config
+    from scope_pipeline.agents.extraction_agent import ExtractionAgent
+    from scope_pipeline.agents.classification_agent import ClassificationAgent
+    from scope_pipeline.agents.ambiguity_agent import AmbiguityAgent
+    from scope_pipeline.agents.gotcha_agent import GotchaAgent
+    from scope_pipeline.agents.completeness_agent import CompletenessAgent
+    from scope_pipeline.agents.quality_agent import QualityAgent
+    from scope_pipeline.services.document_agent import DocumentAgent as ScopeDocAgent
+    from scope_pipeline.services.session_manager import ScopeGapSessionManager
+    from scope_pipeline.services.job_manager import JobManager
+    from scope_pipeline.services.chat_handler import ScopeGapChatHandler
+    from scope_pipeline.services.data_fetcher import DataFetcher
+    from scope_pipeline.orchestrator import ScopeGapPipeline
+
+    pcfg = get_pipeline_config()
+    scope_session_mgr = ScopeGapSessionManager(cache_service=cache)
+    scope_data_fetcher = DataFetcher(api_client=api_client)
+    scope_pipe = ScopeGapPipeline(
+        extraction_agent=ExtractionAgent(
+            api_key=pcfg.openai_api_key, model=pcfg.model,
+            max_tokens=pcfg.extraction_max_tokens,
+        ),
+        classification_agent=ClassificationAgent(
+            api_key=pcfg.openai_api_key, model=pcfg.model,
+            max_tokens=pcfg.classification_max_tokens,
+        ),
+        ambiguity_agent=AmbiguityAgent(
+            api_key=pcfg.openai_api_key, model=pcfg.model,
+        ),
+        gotcha_agent=GotchaAgent(
+            api_key=pcfg.openai_api_key, model=pcfg.model,
+        ),
+        completeness_agent=CompletenessAgent(),
+        quality_agent=QualityAgent(
+            api_key=pcfg.openai_api_key, model=pcfg.model,
+            max_tokens=pcfg.quality_max_tokens,
+        ),
+        document_agent=ScopeDocAgent(docs_dir=pcfg.docs_dir),
+        data_fetcher=scope_data_fetcher,
+        session_manager=scope_session_mgr,
+        config=pcfg,
+    )
+    app.state.scope_pipeline = scope_pipe
+    app.state.scope_job_manager = JobManager(
+        pipeline=scope_pipe, max_concurrent=pcfg.max_concurrent_jobs,
+    )
+    app.state.scope_session_manager = scope_session_mgr
+    app.state.scope_chat_handler = ScopeGapChatHandler(
+        api_key=pcfg.openai_api_key, model=pcfg.model,
+    )
+    logger.info(
+        "Scope Gap Pipeline initialized (model=%s, threshold=%.0f%%)",
+        pcfg.model, pcfg.completeness_threshold,
+    )
+
     logger.info("All services initialised — API ready")
 
     yield  # App runs here
@@ -180,6 +237,7 @@ app.add_middleware(
 app.include_router(chat_router)
 app.include_router(documents_router)
 app.include_router(projects_router)
+app.include_router(scope_gap_router)
 
 # ── Static files (frontend) ───────────────────────────────────────
 frontend_dir = Path(__file__).parent / "frontend"
