@@ -88,6 +88,16 @@ class Settings(BaseSettings):
     aws_secret_access_key: str = ""
     s3_agent_prefix: str = "construction-intelligence-agent"
 
+    # ── Scope Gap Pipeline (Phase 11) ────────────────────
+    scope_gap_model: str = "gpt-4.1"
+    scope_gap_max_concurrent_jobs: int = 3
+    scope_gap_completeness_threshold: float = 95.0
+    scope_gap_max_attempts: int = 3
+    scope_gap_record_threshold: int = 2000
+    scope_gap_extraction_max_tokens: int = 8000
+    scope_gap_classification_max_tokens: int = 4000
+    scope_gap_quality_max_tokens: int = 4000
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
