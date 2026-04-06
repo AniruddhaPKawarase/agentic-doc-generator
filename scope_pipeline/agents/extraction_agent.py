@@ -111,6 +111,8 @@ class ExtractionAgent(BaseAgent):
         )
 
         raw = response.choices[0].message.content or ""
+        if hasattr(response, "usage") and response.usage:
+            self._last_tokens_used = response.usage.total_tokens
         return self._parse_response(raw)
 
     def _parse_response(self, raw: str) -> list[ScopeItem]:

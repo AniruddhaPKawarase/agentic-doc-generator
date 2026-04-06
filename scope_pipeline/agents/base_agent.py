@@ -28,6 +28,7 @@ class BaseAgent(ABC):
     name: str = "base"
     requires_llm: bool = True
     max_retries: int = 2
+    _last_tokens_used: int = 0
 
     async def run(
         self,
@@ -56,11 +57,13 @@ class BaseAgent(ABC):
                     "Agent %s completed in %dms (attempt %d)",
                     self.name, elapsed, attempt,
                 )
+                tokens = self._last_tokens_used
+                self._last_tokens_used = 0
                 return AgentResult(
                     agent=self.name,
                     data=result_data,
                     elapsed_ms=elapsed,
-                    tokens_used=0,
+                    tokens_used=tokens,
                     attempt=attempt,
                 )
             except Exception as exc:

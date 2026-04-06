@@ -1,8 +1,12 @@
 """
 scope_pipeline/services/trade_discovery_service.py — Dynamic trade discovery.
 
-Discovers available trades for a project by fetching all drawing records
-and extracting unique trade names from the `setTrade` or `trades` fields.
+Discovers available trades for a project using a two-strategy approach:
+  1. Primary: Fetch all records via summaryByTrade with empty trade string.
+  2. Fallback: Probe common construction trades via byTrade endpoint (page 1 only).
+
+The fallback is needed because many MongoDB API deployments require a non-empty
+trade parameter and return 0 records when trade="".
 
 Cache strategy:
   Key:  sg_trades:{project_id}           (no set filter)
@@ -12,6 +16,7 @@ Cache strategy:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Optional
@@ -20,6 +25,22 @@ logger = logging.getLogger(__name__)
 
 _CACHE_KEY_PREFIX = "sg_trades"
 _CACHE_TTL = 3600
+
+# Common construction trades to probe when empty-trade discovery returns nothing.
+# Covers CSI MasterFormat divisions 01-33 and common sub-trade names.
+_KNOWN_TRADES = [
+    "Electrical", "Plumbing", "HVAC", "Structural", "Concrete",
+    "Fire Sprinkler", "Fire Protection", "Roofing", "Roofing & Waterproofing",
+    "Framing", "Framing Drywall & Insulation", "Drywall",
+    "Glass & Glazing", "Glazing", "Painting", "Painting & Coatings",
+    "Mechanical", "Architecture", "Civil", "Sitework", "Site Work",
+    "Masonry", "Steel", "Metals", "Wood", "Carpentry",
+    "Waterproofing", "Insulation", "Doors", "Windows",
+    "Finishes", "Flooring", "Ceiling", "Specialties",
+    "Equipment", "Furnishings", "Conveying", "Elevator",
+    "Fire Alarm", "Communications", "Earthwork", "Demolition",
+    "Landscaping", "Utilities", "Paving",
+]
 
 
 class TradeDiscoveryService:
@@ -37,34 +58,47 @@ class TradeDiscoveryService:
         """
         Return unique trades and record counts for a project.
 
+        Strategy:
+          1. Try summaryByTrade with empty trade (returns all records on some APIs).
+          2. If empty, fall back to probing known trades via byTrade endpoint.
+
         Args:
             project_id: Integer project identifier.
-            set_id:     Optional set filter. When provided, only records for
-                        that set are considered.
+            set_id:     Optional set filter.
 
         Returns:
             Sorted list of dicts: [{"trade": "Electrical", "record_count": 107}, ...]
-            Empty list if the API returns no records or the call fails.
         """
         cache_key = _build_cache_key(project_id, set_id)
 
         # -- L2 cache lookup ------------------------------------------------
         cached_raw = await self._cache.get(cache_key)
         if cached_raw is not None:
-            logger.debug(
-                "Cache hit trades project=%s set_id=%s", project_id, set_id
-            )
-            return _deserialize(cached_raw)
+            deserialized = _deserialize(cached_raw)
+            if deserialized:
+                logger.debug(
+                    "Cache hit trades project=%s set_id=%s (%d trades)",
+                    project_id, set_id, len(deserialized),
+                )
+                return deserialized
 
-        # -- Fetch all records with empty trade string (returns everything) --
+        # -- Strategy 1: empty-trade fetch (works on some API deployments) --
         records = await _fetch_all_records(self._api, project_id, set_id)
 
-        # -- Extract unique trades and count records per trade ---------------
         trade_counts: dict[str, int] = {}
         for rec in records:
             trade_names = _extract_trade_names(rec)
             for name in trade_names:
                 trade_counts[name] = trade_counts.get(name, 0) + 1
+
+        # -- Strategy 2: probe known trades if Strategy 1 returned nothing --
+        if not trade_counts:
+            logger.info(
+                "discover_trades: empty-trade fetch returned 0 records for "
+                "project=%s, falling back to trade probing...",
+                project_id,
+            )
+            trade_counts = await self._probe_known_trades(project_id, set_id)
 
         result = [
             {"trade": trade, "record_count": count}
@@ -72,13 +106,47 @@ class TradeDiscoveryService:
         ]
 
         # -- Persist to cache ------------------------------------------------
-        await self._cache.set(cache_key, json.dumps(result), ttl=_CACHE_TTL)
+        if result:
+            await self._cache.set(cache_key, json.dumps(result), ttl=_CACHE_TTL)
 
         logger.info(
-            "discover_trades project=%s set_id=%s → %d trades from %d records",
-            project_id, set_id, len(result), len(records),
+            "discover_trades project=%s set_id=%s → %d trades",
+            project_id, set_id, len(result),
         )
         return result
+
+    async def _probe_known_trades(
+        self,
+        project_id: int,
+        set_id: Optional[int] = None,
+    ) -> dict[str, int]:
+        """Probe common trades by checking page 1 of byTrade endpoint.
+
+        Runs all probes in parallel for speed (~5-8 seconds total).
+        Returns dict of trade_name -> record_count for trades with data.
+        """
+        async def _check_one(trade: str) -> tuple[str, int]:
+            count = await self._api.probe_trade_exists(project_id, trade, set_id)
+            return trade, count
+
+        results = await asyncio.gather(
+            *[_check_one(t) for t in _KNOWN_TRADES],
+            return_exceptions=True,
+        )
+
+        trade_counts: dict[str, int] = {}
+        for item in results:
+            if isinstance(item, Exception):
+                continue
+            trade_name, count = item
+            if count > 0:
+                trade_counts[trade_name] = count
+
+        logger.info(
+            "Trade probing for project=%s: found %d trades with data out of %d probed",
+            project_id, len(trade_counts), len(_KNOWN_TRADES),
+        )
+        return trade_counts
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +168,7 @@ async def _fetch_all_records(
     """
     Fetch records using the empty-trade trick.
 
-    When trade="" the API returns records across all trades.
+    When trade="" the API returns records across all trades on some deployments.
     Falls back gracefully to an empty list on any exception.
     """
     try:
@@ -113,7 +181,7 @@ async def _fetch_all_records(
         return records if isinstance(records, list) else []
     except Exception as exc:
         logger.warning(
-            "discover_trades: API call failed for project=%s set_id=%s: %s",
+            "discover_trades: empty-trade fetch failed for project=%s set_id=%s: %s",
             project_id, set_id, exc,
         )
         return []

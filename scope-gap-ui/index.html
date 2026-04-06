@@ -1,0 +1,1323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>iFieldSmart ScopeAI — Scope Gap Pipeline</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --header-bg: #1E293B;
+      --header-border: #334155;
+      --gold: #C4841D;
+      --gold-light: #E8A842;
+      --blue: #3B82F6;
+      --blue-dark: #2563EB;
+      --bg: #F1F5F9;
+      --card: #FFFFFF;
+      --border: #E2E8F0;
+      --border-dark: #CBD5E1;
+      --text: #0F172A;
+      --text-muted: #64748B;
+      --text-dim: #94A3B8;
+      --success: #22C55E;
+      --success-bg: #DCFCE7;
+      --success-text: #166534;
+      --warn: #F59E0B;
+      --warn-bg: #FEF3C7;
+      --warn-text: #92400E;
+      --error: #EF4444;
+      --error-bg: #FEE2E2;
+      --error-text: #991B1B;
+      --info-bg: #DBEAFE;
+      --info-text: #1E40AF;
+      --radius: 10px;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+      --shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
+      --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.1);
+    }
+    html { font-size: 14px; }
+    body { font-family: 'Inter', -apple-system, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    #root { min-height: 100vh; display: flex; flex-direction: column; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border-dark); border-radius: 3px; }
+
+    /* Animations */
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    .fade-in { animation: fadeIn 0.3s ease-out; }
+
+    /* Spinner */
+    .spinner { width: 18px; height: 18px; border: 2.5px solid var(--border); border-top-color: var(--blue); border-radius: 50%; animation: spin 0.7s linear infinite; display: inline-block; }
+    .spinner-sm { width: 14px; height: 14px; border-width: 2px; }
+    .spinner-gold { border-top-color: var(--gold); }
+
+    /* Utility */
+    .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    // =========================================================================
+    // Configuration
+    // =========================================================================
+    const API_BASE_URL = "http://54.197.189.113:8003";
+
+    const TRADES = [
+      "Electrical", "Plumbing", "HVAC", "Structural", "Concrete",
+      "Fire Sprinkler", "Roofing & Waterproofing", "Framing Drywall & Insulation",
+      "Glass & Glazing", "Painting & Coatings", "Doors Frames & Hardware",
+      "Elevators", "Flooring", "Casework", "Ceramic Tile",
+      "Acoustical Ceilings", "Earthwork", "Structural Steel",
+    ];
+
+    const SEVERITY_COLORS = {
+      high:   { bg: "#FEE2E2", text: "#991B1B", border: "#FECACA" },
+      medium: { bg: "#FEF3C7", text: "#92400E", border: "#FDE68A" },
+      low:    { bg: "#DBEAFE", text: "#1E40AF", border: "#BFDBFE" },
+    };
+
+    const STATUS_COLORS = {
+      queued:    { bg: "#F1F5F9", text: "#475569", dot: "#94A3B8" },
+      running:   { bg: "#DBEAFE", text: "#1E40AF", dot: "#3B82F6" },
+      completed: { bg: "#DCFCE7", text: "#166534", dot: "#22C55E" },
+      partial:   { bg: "#FEF3C7", text: "#92400E", dot: "#F59E0B" },
+      failed:    { bg: "#FEE2E2", text: "#991B1B", dot: "#EF4444" },
+      cancelled: { bg: "#F1F5F9", text: "#64748B", dot: "#94A3B8" },
+      pending:   { bg: "#F1F5F9", text: "#475569", dot: "#94A3B8" },
+    };
+
+    // =========================================================================
+    // API Client
+    // =========================================================================
+    async function api(path, options = {}) {
+      const url = `${API_BASE_URL}${path}`;
+      const res = await fetch(url, {
+        headers: { "Content-Type": "application/json", ...options.headers },
+        ...options,
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        let detail = body;
+        try { detail = JSON.parse(body).detail || body; } catch(_) {}
+        throw new Error(`API ${res.status}: ${detail}`);
+      }
+      if (res.status === 204) return null;
+      return res.json();
+    }
+
+    // =========================================================================
+    // Shared Components
+    // =========================================================================
+    function Badge({ children, color = "blue", style = {} }) {
+      const palettes = {
+        blue:   { bg: "#DBEAFE", text: "#1E40AF" },
+        green:  { bg: "#DCFCE7", text: "#166534" },
+        yellow: { bg: "#FEF3C7", text: "#92400E" },
+        red:    { bg: "#FEE2E2", text: "#991B1B" },
+        gray:   { bg: "#F1F5F9", text: "#475569" },
+        gold:   { bg: "#FEF3C7", text: "#92400E" },
+      };
+      const p = palettes[color] || palettes.blue;
+      return (
+        <span style={{
+          display: "inline-flex", alignItems: "center", padding: "2px 8px",
+          borderRadius: 9999, fontSize: 11, fontWeight: 600,
+          background: p.bg, color: p.text, ...style,
+        }}>
+          {children}
+        </span>
+      );
+    }
+
+    function StatusDot({ status }) {
+      const c = STATUS_COLORS[status] || STATUS_COLORS.pending;
+      return (
+        <span style={{
+          display: "inline-flex", alignItems: "center", gap: 6,
+          padding: "3px 10px", borderRadius: 9999, fontSize: 11, fontWeight: 600,
+          background: c.bg, color: c.text,
+        }}>
+          <span style={{
+            width: 7, height: 7, borderRadius: "50%", background: c.dot,
+            animation: status === "running" ? "pulse 1.5s infinite" : "none",
+          }} />
+          {status}
+        </span>
+      );
+    }
+
+    function Card({ children, title, subtitle, actions, style = {}, className = "" }) {
+      return (
+        <div className={`fade-in ${className}`} style={{
+          background: "var(--card)", borderRadius: "var(--radius)",
+          border: "1px solid var(--border)", boxShadow: "var(--shadow-sm)",
+          ...style,
+        }}>
+          {(title || actions) && (
+            <div style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+              padding: "14px 18px", borderBottom: "1px solid var(--border)",
+            }}>
+              <div>
+                {title && <h3 style={{ fontSize: 14, fontWeight: 700, color: "var(--text)" }}>{title}</h3>}
+                {subtitle && <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{subtitle}</p>}
+              </div>
+              {actions && <div style={{ display: "flex", gap: 8, alignItems: "center" }}>{actions}</div>}
+            </div>
+          )}
+          <div style={{ padding: "16px 18px" }}>{children}</div>
+        </div>
+      );
+    }
+
+    function Btn({ children, variant = "default", size = "md", onClick, disabled, loading, style = {} }) {
+      const variants = {
+        primary:  { bg: "var(--blue-dark)", color: "#fff", border: "var(--blue-dark)" },
+        gold:     { bg: "var(--gold)", color: "#fff", border: "var(--gold)" },
+        success:  { bg: "var(--success)", color: "#fff", border: "var(--success)" },
+        danger:   { bg: "var(--error-bg)", color: "var(--error-text)", border: "#FECACA" },
+        ghost:    { bg: "transparent", color: "var(--text-muted)", border: "var(--border)" },
+        default:  { bg: "#F8FAFC", color: "var(--text)", border: "var(--border)" },
+      };
+      const sizes = { sm: { px: 10, py: 4, fs: 11 }, md: { px: 14, py: 7, fs: 12 }, lg: { px: 20, py: 9, fs: 13 } };
+      const v = variants[variant] || variants.default;
+      const s = sizes[size] || sizes.md;
+      return (
+        <button disabled={disabled || loading} onClick={onClick} style={{
+          display: "inline-flex", alignItems: "center", gap: 6,
+          padding: `${s.py}px ${s.px}px`, fontSize: s.fs, fontWeight: 600,
+          fontFamily: "inherit", borderRadius: 7,
+          background: v.bg, color: v.color, border: `1px solid ${v.border}`,
+          cursor: disabled || loading ? "not-allowed" : "pointer",
+          opacity: disabled ? 0.5 : 1,
+          transition: "all 0.15s ease",
+          ...style,
+        }}>
+          {loading && <span className="spinner spinner-sm" />}
+          {children}
+        </button>
+      );
+    }
+
+    function EmptyState({ icon, title, description }) {
+      return (
+        <div style={{ textAlign: "center", padding: "48px 24px" }}>
+          <div style={{ fontSize: 32, marginBottom: 12, opacity: 0.3 }}>{icon || "---"}</div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)", marginBottom: 4 }}>{title}</div>
+          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{description}</div>
+        </div>
+      );
+    }
+
+    function ErrorBanner({ error, onDismiss }) {
+      if (!error) return null;
+      return (
+        <div className="fade-in" style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "10px 16px", borderRadius: "var(--radius)",
+          background: "var(--error-bg)", color: "var(--error-text)",
+          border: "1px solid #FECACA", fontSize: 12, marginBottom: 16,
+        }}>
+          <span style={{ fontWeight: 500 }}>{error}</span>
+          {onDismiss && (
+            <button onClick={onDismiss} style={{
+              background: "none", border: "none", color: "var(--error-text)",
+              cursor: "pointer", fontWeight: 700, fontSize: 14,
+            }}>x</button>
+          )}
+        </div>
+      );
+    }
+
+    function formatMs(ms) {
+      if (ms == null) return "--";
+      if (ms < 1000) return `${ms}ms`;
+      return `${(ms / 1000).toFixed(1)}s`;
+    }
+
+    function formatCost(usd) {
+      if (usd == null) return "--";
+      return `$${usd.toFixed(4)}`;
+    }
+
+    function formatDate(d) {
+      if (!d) return "--";
+      try { return new Date(d).toLocaleString(); } catch(_) { return d; }
+    }
+
+    function formatPct(n) {
+      if (n == null) return "--";
+      return `${(n * 100 >= 100 ? n : n * 100).toFixed(1)}%`;
+    }
+
+    // =========================================================================
+    // Page 1: Dashboard
+    // =========================================================================
+    function DashboardPage({ onResult }) {
+      const [projectId, setProjectId] = React.useState(7276);
+      const [trade, setTrade] = React.useState(TRADES[0]);
+      const [setIds, setSetIds] = React.useState("");
+      const [loading, setLoading] = React.useState(false);
+      const [streaming, setStreaming] = React.useState(false);
+      const [progress, setProgress] = React.useState([]);
+      const [error, setError] = React.useState(null);
+      const [agentStatuses, setAgentStatuses] = React.useState({});
+      const [completeness, setCompleteness] = React.useState(null);
+      const [attempts, setAttempts] = React.useState(0);
+      const eventSourceRef = React.useRef(null);
+
+      function buildBody() {
+        const body = { project_id: parseInt(projectId, 10), trade };
+        if (setIds.trim()) {
+          body.set_ids = setIds.split(",").map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+        }
+        return body;
+      }
+
+      async function handleGenerate() {
+        setError(null); setLoading(true); setProgress([]);
+        setAgentStatuses({}); setCompleteness(null); setAttempts(0);
+        try {
+          const result = await api("/api/scope-gap/generate", {
+            method: "POST", body: JSON.stringify(buildBody()),
+          });
+          onResult(result);
+        } catch (e) {
+          setError(e.message);
+        } finally {
+          setLoading(false);
+        }
+      }
+
+      function handleStream() {
+        setError(null); setStreaming(true); setProgress([]); setAgentStatuses({});
+        setCompleteness(null); setAttempts(0);
+
+        if (eventSourceRef.current) eventSourceRef.current.close();
+
+        const body = buildBody();
+        // SSE via fetch for POST (EventSource only supports GET)
+        // We use a workaround: POST the request, then read SSE from response
+        fetch(`${API_BASE_URL}/api/scope-gap/stream`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }).then(res => {
+          if (!res.ok) {
+            res.text().then(t => { setError(`Stream error: ${res.status} ${t}`); setStreaming(false); });
+            return;
+          }
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+
+          function processLine(line) {
+            if (line.startsWith("event:")) {
+              buffer = line.replace("event:", "").trim();
+            } else if (line.startsWith("data:")) {
+              const rawData = line.replace("data:", "").trim();
+              if (!rawData) return;
+              try {
+                const data = JSON.parse(rawData);
+                const eventType = buffer || "message";
+
+                if (eventType === "result") {
+                  onResult(data);
+                  setStreaming(false);
+                  return;
+                }
+                if (eventType === "error") {
+                  setError(data.error || "Pipeline error");
+                  setStreaming(false);
+                  return;
+                }
+
+                // Progress events
+                setProgress(prev => [...prev, { type: eventType, data, ts: new Date() }]);
+
+                if (data.agent) {
+                  setAgentStatuses(prev => ({
+                    ...prev,
+                    [data.agent]: {
+                      status: data.status || eventType,
+                      elapsed_ms: data.elapsed_ms,
+                      tokens: data.tokens_used,
+                    },
+                  }));
+                }
+                if (data.completeness_pct != null) setCompleteness(data.completeness_pct);
+                if (data.attempt != null) setAttempts(data.attempt);
+              } catch (_) {
+                // Not JSON, ignore
+              }
+            }
+          }
+
+          function pump() {
+            reader.read().then(({ done, value }) => {
+              if (done) { setStreaming(false); return; }
+              const text = decoder.decode(value, { stream: true });
+              const lines = text.split("\n");
+              lines.forEach(line => { if (line.trim()) processLine(line.trim()); });
+              pump();
+            }).catch(e => { setError(e.message); setStreaming(false); });
+          }
+          pump();
+        }).catch(e => { setError(e.message); setStreaming(false); });
+      }
+
+      async function handleSubmit() {
+        setError(null); setLoading(true);
+        try {
+          const result = await api("/api/scope-gap/submit", {
+            method: "POST", body: JSON.stringify(buildBody()),
+          });
+          setProgress([{ type: "job_submitted", data: result, ts: new Date() }]);
+          alert(`Job submitted. ID: ${result.job_id}\nPoll URL: ${result.poll_url}\n\nSwitch to the Jobs tab to monitor progress.`);
+        } catch (e) {
+          setError(e.message);
+        } finally {
+          setLoading(false);
+        }
+      }
+
+      const agentNames = ["extraction", "classification", "ambiguity_detection", "gotcha_detection", "completeness_check", "quality_assurance", "document_generation"];
+      const isDisabled = loading || streaming;
+
+      return (
+        <div style={{ maxWidth: 900, margin: "0 auto" }}>
+          <Card title="Pipeline Configuration" subtitle="Set parameters for scope gap extraction">
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", display: "block", marginBottom: 6 }}>
+                  Project ID
+                </label>
+                <input type="number" value={projectId}
+                  onChange={e => setProjectId(e.target.value)}
+                  disabled={isDisabled}
+                  style={{
+                    width: "100%", padding: "8px 12px", fontSize: 13, fontFamily: "inherit",
+                    border: "1px solid var(--border)", borderRadius: 7, outline: "none",
+                    background: "var(--card)", color: "var(--text)",
+                  }} />
+              </div>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", display: "block", marginBottom: 6 }}>
+                  Trade
+                </label>
+                <select value={trade} onChange={e => setTrade(e.target.value)} disabled={isDisabled}
+                  style={{
+                    width: "100%", padding: "8px 12px", fontSize: 13, fontFamily: "inherit",
+                    border: "1px solid var(--border)", borderRadius: 7, outline: "none",
+                    background: "var(--card)", color: "var(--text)", cursor: "pointer",
+                  }}>
+                  {TRADES.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+              <div style={{ gridColumn: "1 / -1" }}>
+                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", display: "block", marginBottom: 6 }}>
+                  Set IDs <span style={{ fontWeight: 400, color: "var(--text-dim)" }}>(optional, comma-separated)</span>
+                </label>
+                <input type="text" value={setIds} onChange={e => setSetIds(e.target.value)}
+                  disabled={isDisabled}
+                  placeholder="e.g. 101, 102, 103"
+                  style={{
+                    width: "100%", padding: "8px 12px", fontSize: 13, fontFamily: "inherit",
+                    border: "1px solid var(--border)", borderRadius: 7, outline: "none",
+                    background: "var(--card)", color: "var(--text)",
+                  }} />
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+              <Btn variant="primary" size="lg" onClick={handleGenerate} loading={loading} disabled={isDisabled}>
+                Generate Report
+              </Btn>
+              <Btn variant="gold" size="lg" onClick={handleStream} loading={streaming} disabled={isDisabled}>
+                Stream (SSE)
+              </Btn>
+              <Btn variant="default" size="lg" onClick={handleSubmit} disabled={isDisabled}>
+                Submit Background Job
+              </Btn>
+            </div>
+          </Card>
+
+          <ErrorBanner error={error} onDismiss={() => setError(null)} />
+
+          {/* Agent Progress */}
+          {(loading || streaming || Object.keys(agentStatuses).length > 0) && (
+            <Card title="Agent Progress" style={{ marginTop: 16 }}
+              actions={
+                <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                  {completeness != null && (
+                    <Badge color="blue">Completeness: {formatPct(completeness)}</Badge>
+                  )}
+                  {attempts > 0 && (
+                    <Badge color="gold">Attempt #{attempts}</Badge>
+                  )}
+                </div>
+              }>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 10 }}>
+                {agentNames.map(name => {
+                  const info = agentStatuses[name];
+                  const isActive = info && (info.status === "running" || info.status === "started");
+                  const isDone = info && (info.status === "completed" || info.status === "done");
+                  return (
+                    <div key={name} style={{
+                      padding: "10px 14px", borderRadius: 8,
+                      border: `1px solid ${isDone ? "#BBF7D0" : isActive ? "#BFDBFE" : "var(--border)"}`,
+                      background: isDone ? "#F0FDF4" : isActive ? "#EFF6FF" : "#FAFAFA",
+                      transition: "all 0.2s ease",
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                        {isActive && <span className="spinner spinner-sm" />}
+                        {isDone && <span style={{ color: "var(--success)", fontWeight: 700 }}>&#10003;</span>}
+                        {!info && <span style={{ color: "var(--text-dim)" }}>&#9675;</span>}
+                        <span style={{ fontSize: 12, fontWeight: 600, textTransform: "capitalize" }}>
+                          {name.replace(/_/g, " ")}
+                        </span>
+                      </div>
+                      {info && (
+                        <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                          {info.elapsed_ms != null && <span>{formatMs(info.elapsed_ms)}</span>}
+                          {info.tokens != null && <span style={{ marginLeft: 8 }}>{info.tokens.toLocaleString()} tok</span>}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
+
+          {/* Progress Log */}
+          {progress.length > 0 && (
+            <Card title="Event Log" subtitle={`${progress.length} events`} style={{ marginTop: 16 }}>
+              <div style={{ maxHeight: 300, overflowY: "auto", fontSize: 12, fontFamily: "'Courier New', monospace" }}>
+                {progress.map((ev, i) => (
+                  <div key={i} style={{
+                    padding: "4px 0", borderBottom: "1px solid var(--border)",
+                    display: "flex", gap: 10,
+                  }}>
+                    <span style={{ color: "var(--text-dim)", minWidth: 70, flexShrink: 0 }}>
+                      {ev.ts.toLocaleTimeString()}
+                    </span>
+                    <Badge color={ev.type === "error" ? "red" : ev.type === "result" ? "green" : "blue"} style={{ fontSize: 10 }}>
+                      {ev.type}
+                    </Badge>
+                    <span className="truncate" style={{ color: "var(--text-muted)", flex: 1 }}>
+                      {typeof ev.data === "object" ? JSON.stringify(ev.data) : String(ev.data)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // Page 2: Results Viewer
+    // =========================================================================
+    function ResultsPage({ result }) {
+      const [sortField, setSortField] = React.useState("trade");
+      const [sortDir, setSortDir] = React.useState("asc");
+      const [filter, setFilter] = React.useState("");
+
+      if (!result) {
+        return <EmptyState icon="&#128202;" title="No results yet" description="Run the pipeline from the Dashboard to see results here." />;
+      }
+
+      const items = result.items || [];
+      const ambiguities = result.ambiguities || [];
+      const gotchas = result.gotchas || [];
+      const completeness = result.completeness || {};
+      const quality = result.quality || {};
+      const stats = result.pipeline_stats || {};
+      const docs = result.documents || {};
+
+      // Sorted & filtered items
+      const filteredItems = items.filter(item => {
+        if (!filter) return true;
+        const f = filter.toLowerCase();
+        return (item.text || "").toLowerCase().includes(f) ||
+               (item.trade || "").toLowerCase().includes(f) ||
+               (item.drawing_name || "").toLowerCase().includes(f) ||
+               (item.csi_code || "").toLowerCase().includes(f);
+      });
+
+      const sortedItems = [...filteredItems].sort((a, b) => {
+        let va = a[sortField] || "";
+        let vb = b[sortField] || "";
+        if (typeof va === "number" && typeof vb === "number") return sortDir === "asc" ? va - vb : vb - va;
+        va = String(va).toLowerCase();
+        vb = String(vb).toLowerCase();
+        return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
+      });
+
+      function toggleSort(field) {
+        if (sortField === field) setSortDir(d => d === "asc" ? "desc" : "asc");
+        else { setSortField(field); setSortDir("asc"); }
+      }
+
+      function SortHeader({ field, children }) {
+        const active = sortField === field;
+        return (
+          <th onClick={() => toggleSort(field)} style={{
+            padding: "8px 10px", textAlign: "left", fontSize: 11, fontWeight: 600,
+            color: active ? "var(--blue)" : "var(--text-muted)",
+            cursor: "pointer", userSelect: "none", whiteSpace: "nowrap",
+            borderBottom: "2px solid var(--border)",
+          }}>
+            {children} {active ? (sortDir === "asc" ? "↑" : "↓") : ""}
+          </th>
+        );
+      }
+
+      return (
+        <div style={{ maxWidth: 1200, margin: "0 auto" }}>
+          {/* Executive Summary */}
+          <Card title="Executive Summary"
+            subtitle={`Project ${result.project_id} — ${result.trade}`}
+            actions={<Badge color="gold">{result.project_name || `Project ${result.project_id}`}</Badge>}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}>
+              {[
+                { label: "Scope Items", value: items.length, color: "var(--blue)" },
+                { label: "Ambiguities", value: ambiguities.length, color: "var(--warn)" },
+                { label: "Gotchas", value: gotchas.length, color: "var(--error)" },
+                { label: "Completeness", value: formatPct(completeness.overall_pct), color: "var(--success)" },
+                { label: "Quality Score", value: quality.accuracy_score != null ? `${(quality.accuracy_score * 100).toFixed(0)}%` : "--", color: "var(--gold)" },
+              ].map((m, i) => (
+                <div key={i} style={{
+                  padding: "14px 16px", borderRadius: 8, background: "#F8FAFC",
+                  border: "1px solid var(--border)", textAlign: "center",
+                }}>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: m.color }}>{m.value}</div>
+                  <div style={{ fontSize: 11, fontWeight: 500, color: "var(--text-muted)", marginTop: 4 }}>{m.label}</div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          {/* Scope Items Table */}
+          <Card title="Scope Items" subtitle={`${sortedItems.length} of ${items.length} items`} style={{ marginTop: 16 }}
+            actions={
+              <input placeholder="Filter items..." value={filter} onChange={e => setFilter(e.target.value)}
+                style={{
+                  padding: "5px 10px", fontSize: 12, fontFamily: "inherit",
+                  border: "1px solid var(--border)", borderRadius: 6, outline: "none", width: 200,
+                }} />
+            }>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr>
+                    <SortHeader field="trade">Trade</SortHeader>
+                    <SortHeader field="drawing_name">Drawing</SortHeader>
+                    <SortHeader field="csi_code">CSI</SortHeader>
+                    <SortHeader field="text">Description</SortHeader>
+                    <SortHeader field="confidence">Confidence</SortHeader>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedItems.length === 0 ? (
+                    <tr><td colSpan={5} style={{ padding: 24, textAlign: "center", color: "var(--text-dim)" }}>No items found</td></tr>
+                  ) : sortedItems.slice(0, 200).map((item, i) => (
+                    <tr key={item.id || i} style={{ borderBottom: "1px solid var(--border)" }}>
+                      <td style={{ padding: "8px 10px" }}><Badge color="blue">{item.trade}</Badge></td>
+                      <td style={{ padding: "8px 10px", maxWidth: 160 }} className="truncate">{item.drawing_name}</td>
+                      <td style={{ padding: "8px 10px", fontFamily: "monospace", fontSize: 11 }}>{item.csi_code || "--"}</td>
+                      <td style={{ padding: "8px 10px", maxWidth: 350 }} className="truncate">{item.text}</td>
+                      <td style={{ padding: "8px 10px" }}>
+                        <span style={{
+                          fontWeight: 600,
+                          color: (item.classification_confidence || item.confidence) >= 0.8 ? "var(--success)" :
+                                 (item.classification_confidence || item.confidence) >= 0.5 ? "var(--warn)" : "var(--error)",
+                        }}>
+                          {((item.classification_confidence || item.confidence || 0) * 100).toFixed(0)}%
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {sortedItems.length > 200 && (
+                <div style={{ textAlign: "center", padding: 12, color: "var(--text-dim)", fontSize: 12 }}>
+                  Showing first 200 of {sortedItems.length} items
+                </div>
+              )}
+            </div>
+          </Card>
+
+          {/* Ambiguities */}
+          {ambiguities.length > 0 && (
+            <Card title="Ambiguities" subtitle={`${ambiguities.length} trade overlaps detected`} style={{ marginTop: 16 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {ambiguities.map((amb, i) => {
+                  const sc = SEVERITY_COLORS[amb.severity] || SEVERITY_COLORS.low;
+                  return (
+                    <div key={amb.id || i} style={{
+                      padding: "12px 16px", borderRadius: 8, border: `1px solid ${sc.border}`,
+                      background: sc.bg,
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                        <Badge color={amb.severity === "high" ? "red" : amb.severity === "medium" ? "yellow" : "blue"}>
+                          {amb.severity}
+                        </Badge>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: sc.text }}>
+                          Trades: {amb.competing_trades.join(", ")}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 12, color: sc.text, marginBottom: 4 }}>{amb.scope_text}</div>
+                      <div style={{ fontSize: 11, color: sc.text, opacity: 0.8 }}>
+                        Recommendation: {amb.recommendation}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
+
+          {/* Gotchas */}
+          {gotchas.length > 0 && (
+            <Card title="Gotchas / Hidden Risks" subtitle={`${gotchas.length} risks identified`} style={{ marginTop: 16 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {gotchas.map((g, i) => {
+                  const sc = SEVERITY_COLORS[g.severity] || SEVERITY_COLORS.low;
+                  return (
+                    <div key={g.id || i} style={{
+                      padding: "12px 16px", borderRadius: 8, border: `1px solid ${sc.border}`,
+                      background: sc.bg,
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                        <Badge color={g.severity === "high" ? "red" : g.severity === "medium" ? "yellow" : "blue"}>
+                          {g.severity}
+                        </Badge>
+                        <Badge color="gray">{g.risk_type}</Badge>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: sc.text }}>
+                          {g.affected_trades.join(", ")}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 12, color: sc.text, marginBottom: 4 }}>{g.description}</div>
+                      <div style={{ fontSize: 11, color: sc.text, opacity: 0.8 }}>
+                        Recommendation: {g.recommendation}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
+
+          {/* Completeness */}
+          <Card title="Completeness Report" style={{ marginTop: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 16 }}>
+              {[
+                { label: "Drawing Coverage", value: formatPct(completeness.drawing_coverage_pct) },
+                { label: "CSI Coverage", value: formatPct(completeness.csi_coverage_pct) },
+                { label: "Overall", value: formatPct(completeness.overall_pct) },
+                { label: "Hallucinations", value: completeness.hallucination_count || 0 },
+                { label: "Attempts", value: completeness.attempt || 1 },
+                { label: "Complete", value: completeness.is_complete ? "Yes" : "No" },
+              ].map((m, i) => (
+                <div key={i} style={{ padding: "10px 14px", background: "#F8FAFC", borderRadius: 8, border: "1px solid var(--border)" }}>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 2 }}>{m.label}</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text)" }}>{m.value}</div>
+                </div>
+              ))}
+            </div>
+            {(completeness.missing_drawings || []).length > 0 && (
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Missing Drawings</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                  {completeness.missing_drawings.map((d, i) => <Badge key={i} color="yellow">{d}</Badge>)}
+                </div>
+              </div>
+            )}
+            {(completeness.missing_csi_codes || []).length > 0 && (
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Missing CSI Codes</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                  {completeness.missing_csi_codes.map((c, i) => <Badge key={i} color="gray">{c}</Badge>)}
+                </div>
+              </div>
+            )}
+          </Card>
+
+          {/* Downloads */}
+          <Card title="Documents" style={{ marginTop: 16 }}>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              {docs.word_path && <Btn variant="primary" onClick={() => window.open(`${API_BASE_URL}${docs.word_path}`)}>Download Word</Btn>}
+              {docs.pdf_path && <Btn variant="primary" onClick={() => window.open(`${API_BASE_URL}${docs.pdf_path}`)}>Download PDF</Btn>}
+              {docs.csv_path && <Btn variant="default" onClick={() => window.open(`${API_BASE_URL}${docs.csv_path}`)}>Download CSV</Btn>}
+              {docs.json_path && <Btn variant="default" onClick={() => window.open(`${API_BASE_URL}${docs.json_path}`)}>Download JSON</Btn>}
+              {!docs.word_path && !docs.pdf_path && !docs.csv_path && !docs.json_path && (
+                <span style={{ fontSize: 12, color: "var(--text-dim)" }}>No documents generated.</span>
+              )}
+            </div>
+          </Card>
+
+          {/* Pipeline Stats */}
+          <Card title="Pipeline Statistics" style={{ marginTop: 16, marginBottom: 32 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 16 }}>
+              {[
+                { label: "Total Time", value: formatMs(stats.total_ms) },
+                { label: "Attempts", value: stats.attempts || 1 },
+                { label: "Tokens Used", value: (stats.tokens_used || 0).toLocaleString() },
+                { label: "Cost", value: formatCost(stats.estimated_cost_usd) },
+                { label: "Records", value: stats.records_processed || 0 },
+                { label: "Items Extracted", value: stats.items_extracted || 0 },
+              ].map((m, i) => (
+                <div key={i} style={{ padding: "10px 14px", background: "#F8FAFC", borderRadius: 8, border: "1px solid var(--border)" }}>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 2 }}>{m.label}</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text)" }}>{m.value}</div>
+                </div>
+              ))}
+            </div>
+            {stats.per_agent_timing && Object.keys(stats.per_agent_timing).length > 0 && (
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>Per-Agent Timing</div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {Object.entries(stats.per_agent_timing).map(([agent, ms]) => (
+                    <div key={agent} style={{
+                      padding: "6px 12px", borderRadius: 6, background: "#F1F5F9",
+                      border: "1px solid var(--border)", fontSize: 11,
+                    }}>
+                      <span style={{ fontWeight: 600, textTransform: "capitalize" }}>{agent.replace(/_/g, " ")}</span>
+                      <span style={{ marginLeft: 6, color: "var(--text-muted)" }}>{formatMs(ms)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </Card>
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // Page 3: Sessions
+    // =========================================================================
+    function SessionsPage() {
+      const [sessions, setSessions] = React.useState([]);
+      const [loading, setLoading] = React.useState(false);
+      const [error, setError] = React.useState(null);
+      const [selected, setSelected] = React.useState(null);
+      const [detail, setDetail] = React.useState(null);
+      const [detailLoading, setDetailLoading] = React.useState(false);
+      const [chatMsg, setChatMsg] = React.useState("");
+      const [chatLoading, setChatLoading] = React.useState(false);
+      const [chatReply, setChatReply] = React.useState(null);
+
+      async function loadSessions() {
+        setLoading(true); setError(null);
+        try {
+          const data = await api("/api/scope-gap/sessions");
+          setSessions(data || []);
+        } catch (e) { setError(e.message); }
+        finally { setLoading(false); }
+      }
+
+      React.useEffect(() => { loadSessions(); }, []);
+
+      async function viewSession(id) {
+        setSelected(id); setDetailLoading(true); setDetail(null); setChatReply(null);
+        try {
+          const data = await api(`/api/scope-gap/sessions/${id}`);
+          setDetail(data);
+        } catch (e) { setError(e.message); }
+        finally { setDetailLoading(false); }
+      }
+
+      async function resolveAmbiguity(sessionId, ambiguityId) {
+        const trade = prompt("Assign to trade:");
+        if (!trade) return;
+        try {
+          await api(`/api/scope-gap/sessions/${sessionId}/resolve-ambiguity`, {
+            method: "POST", body: JSON.stringify({ ambiguity_id: ambiguityId, assigned_trade: trade }),
+          });
+          viewSession(sessionId);
+        } catch (e) { setError(e.message); }
+      }
+
+      async function acknowledgeGotcha(sessionId, gotchaId) {
+        try {
+          await api(`/api/scope-gap/sessions/${sessionId}/acknowledge-gotcha`, {
+            method: "POST", body: JSON.stringify({ gotcha_id: gotchaId }),
+          });
+          viewSession(sessionId);
+        } catch (e) { setError(e.message); }
+      }
+
+      async function sendChat(sessionId) {
+        if (!chatMsg.trim()) return;
+        setChatLoading(true); setChatReply(null);
+        try {
+          const reply = await api(`/api/scope-gap/sessions/${sessionId}/chat`, {
+            method: "POST", body: JSON.stringify({ message: chatMsg }),
+          });
+          setChatReply(reply);
+          setChatMsg("");
+        } catch (e) { setError(e.message); }
+        finally { setChatLoading(false); }
+      }
+
+      if (selected && detail) {
+        const latestResult = detail.latest_result;
+        return (
+          <div style={{ maxWidth: 1000, margin: "0 auto" }}>
+            <Btn variant="ghost" onClick={() => { setSelected(null); setDetail(null); }} style={{ marginBottom: 12 }}>
+              &#8592; Back to Sessions
+            </Btn>
+            <ErrorBanner error={error} onDismiss={() => setError(null)} />
+
+            <Card title={`Session ${detail.id}`}
+              subtitle={`Project ${detail.project_id} — ${detail.trade}`}
+              actions={<Badge color="green">{detail.runs?.length || 0} runs</Badge>}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
+                <div>
+                  <div style={{ fontSize: 11, color: "var(--text-dim)" }}>Created</div>
+                  <div style={{ fontSize: 12, fontWeight: 600 }}>{formatDate(detail.created_at)}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: "var(--text-dim)" }}>Updated</div>
+                  <div style={{ fontSize: 12, fontWeight: 600 }}>{formatDate(detail.updated_at)}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: "var(--text-dim)" }}>Set IDs</div>
+                  <div style={{ fontSize: 12, fontWeight: 600 }}>{(detail.set_ids || []).join(", ") || "All"}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: "var(--text-dim)" }}>Has Result</div>
+                  <div style={{ fontSize: 12, fontWeight: 600 }}>{latestResult ? "Yes" : "No"}</div>
+                </div>
+              </div>
+            </Card>
+
+            {/* Run history */}
+            {(detail.runs || []).length > 0 && (
+              <Card title="Run History" style={{ marginTop: 16 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ borderBottom: "2px solid var(--border)" }}>
+                      <th style={{ padding: "6px 10px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--text-muted)" }}>Run ID</th>
+                      <th style={{ padding: "6px 10px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--text-muted)" }}>Status</th>
+                      <th style={{ padding: "6px 10px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--text-muted)" }}>Items</th>
+                      <th style={{ padding: "6px 10px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--text-muted)" }}>Completeness</th>
+                      <th style={{ padding: "6px 10px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--text-muted)" }}>Tokens</th>
+                      <th style={{ padding: "6px 10px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--text-muted)" }}>Cost</th>
+                      <th style={{ padding: "6px 10px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--text-muted)" }}>Started</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {detail.runs.map((run, i) => (
+                      <tr key={run.run_id || i} style={{ borderBottom: "1px solid var(--border)" }}>
+                        <td style={{ padding: "6px 10px", fontFamily: "monospace", fontSize: 11 }}>{run.run_id}</td>
+                        <td style={{ padding: "6px 10px" }}><StatusDot status={run.status} /></td>
+                        <td style={{ padding: "6px 10px" }}>{run.items_count}</td>
+                        <td style={{ padding: "6px 10px" }}>{formatPct(run.completeness_pct)}</td>
+                        <td style={{ padding: "6px 10px" }}>{(run.token_usage || 0).toLocaleString()}</td>
+                        <td style={{ padding: "6px 10px" }}>{formatCost(run.cost_usd)}</td>
+                        <td style={{ padding: "6px 10px" }}>{formatDate(run.started_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Card>
+            )}
+
+            {/* Ambiguity Resolutions */}
+            {latestResult && (latestResult.ambiguities || []).length > 0 && (
+              <Card title="Ambiguities" style={{ marginTop: 16 }}>
+                {latestResult.ambiguities.map((amb, i) => {
+                  const resolved = detail.ambiguity_resolutions && detail.ambiguity_resolutions[amb.id];
+                  return (
+                    <div key={amb.id || i} style={{
+                      padding: "10px 14px", marginBottom: 8, borderRadius: 8,
+                      border: "1px solid var(--border)", background: resolved ? "#F0FDF4" : "#FFFBEB",
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                        <div>
+                          <Badge color={amb.severity === "high" ? "red" : amb.severity === "medium" ? "yellow" : "blue"}>{amb.severity}</Badge>
+                          <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 500 }}>{amb.scope_text}</span>
+                        </div>
+                        {resolved ? (
+                          <Badge color="green">Resolved: {resolved}</Badge>
+                        ) : (
+                          <Btn variant="gold" size="sm" onClick={() => resolveAmbiguity(detail.id, amb.id)}>Resolve</Btn>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </Card>
+            )}
+
+            {/* Gotcha Acknowledgments */}
+            {latestResult && (latestResult.gotchas || []).length > 0 && (
+              <Card title="Gotchas" style={{ marginTop: 16 }}>
+                {latestResult.gotchas.map((g, i) => {
+                  const acked = (detail.gotcha_acknowledgments || []).includes(g.id);
+                  return (
+                    <div key={g.id || i} style={{
+                      padding: "10px 14px", marginBottom: 8, borderRadius: 8,
+                      border: "1px solid var(--border)", background: acked ? "#F0FDF4" : "#FEF2F2",
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                        <div>
+                          <Badge color={g.severity === "high" ? "red" : "yellow"}>{g.severity}</Badge>
+                          <Badge color="gray" style={{ marginLeft: 4 }}>{g.risk_type}</Badge>
+                          <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 500 }}>{g.description}</span>
+                        </div>
+                        {acked ? (
+                          <Badge color="green">Acknowledged</Badge>
+                        ) : (
+                          <Btn variant="default" size="sm" onClick={() => acknowledgeGotcha(detail.id, g.id)}>Acknowledge</Btn>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </Card>
+            )}
+
+            {/* Follow-up Chat */}
+            <Card title="Follow-up Chat" subtitle="Ask questions about this scope gap report" style={{ marginTop: 16, marginBottom: 32 }}>
+              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                <input value={chatMsg} onChange={e => setChatMsg(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && sendChat(detail.id)}
+                  placeholder="Ask about the scope gap report..."
+                  disabled={chatLoading}
+                  style={{
+                    flex: 1, padding: "8px 12px", fontSize: 13, fontFamily: "inherit",
+                    border: "1px solid var(--border)", borderRadius: 7, outline: "none",
+                  }} />
+                <Btn variant="primary" onClick={() => sendChat(detail.id)} loading={chatLoading}>Send</Btn>
+              </div>
+              {chatReply && (
+                <div className="fade-in" style={{
+                  padding: "12px 16px", borderRadius: 8, background: "#F8FAFC",
+                  border: "1px solid var(--border)", fontSize: 13, lineHeight: 1.6,
+                  whiteSpace: "pre-wrap",
+                }}>
+                  {chatReply.content || chatReply.response || chatReply.message || JSON.stringify(chatReply, null, 2)}
+                </div>
+              )}
+              {/* Message history */}
+              {(detail.messages || []).length > 0 && (
+                <div style={{ marginTop: 12, maxHeight: 300, overflowY: "auto" }}>
+                  {detail.messages.map((msg, i) => (
+                    <div key={i} style={{
+                      padding: "8px 12px", marginBottom: 6, borderRadius: 8,
+                      background: msg.role === "user" ? "#EFF6FF" : "#F8FAFC",
+                      border: "1px solid var(--border)", fontSize: 12,
+                    }}>
+                      <div style={{ fontWeight: 600, fontSize: 11, color: "var(--text-muted)", marginBottom: 2 }}>
+                        {msg.role} — {formatDate(msg.timestamp)}
+                      </div>
+                      <div style={{ whiteSpace: "pre-wrap" }}>{msg.content}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          </div>
+        );
+      }
+
+      return (
+        <div style={{ maxWidth: 900, margin: "0 auto" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <h2 style={{ fontSize: 16, fontWeight: 700 }}>Sessions</h2>
+            <Btn variant="primary" size="sm" onClick={loadSessions} loading={loading}>Refresh</Btn>
+          </div>
+          <ErrorBanner error={error} onDismiss={() => setError(null)} />
+
+          {loading && sessions.length === 0 ? (
+            <div style={{ textAlign: "center", padding: 40 }}><span className="spinner" /></div>
+          ) : sessions.length === 0 ? (
+            <Card><EmptyState title="No sessions" description="Run a pipeline to create sessions." /></Card>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {sessions.map(s => (
+                <div key={s.id} onClick={() => viewSession(s.id)} style={{
+                  padding: "14px 18px", borderRadius: "var(--radius)",
+                  background: "var(--card)", border: "1px solid var(--border)",
+                  cursor: "pointer", transition: "all 0.15s ease",
+                  boxShadow: "var(--shadow-sm)",
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div>
+                      <span style={{ fontWeight: 700, fontSize: 13 }}>Project {s.project_id}</span>
+                      <Badge color="blue" style={{ marginLeft: 8 }}>{s.trade}</Badge>
+                      <Badge color="gray" style={{ marginLeft: 4 }}>{s.runs_count} runs</Badge>
+                      {s.has_result && <Badge color="green" style={{ marginLeft: 4 }}>Has Result</Badge>}
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
+                      {formatDate(s.created_at)}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 4, fontFamily: "monospace" }}>
+                    ID: {s.id} | Set IDs: {(s.set_ids || []).join(", ") || "All"}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // Page 4: Jobs
+    // =========================================================================
+    function JobsPage() {
+      const [jobs, setJobs] = React.useState([]);
+      const [loading, setLoading] = React.useState(false);
+      const [error, setError] = React.useState(null);
+      const pollRef = React.useRef(null);
+
+      async function loadJobs() {
+        setLoading(true); setError(null);
+        try {
+          const data = await api("/api/scope-gap/jobs");
+          setJobs(data || []);
+        } catch (e) { setError(e.message); }
+        finally { setLoading(false); }
+      }
+
+      React.useEffect(() => {
+        loadJobs();
+        return () => { if (pollRef.current) clearInterval(pollRef.current); };
+      }, []);
+
+      // Poll when any job is running/queued
+      React.useEffect(() => {
+        if (pollRef.current) clearInterval(pollRef.current);
+        const hasActive = jobs.some(j => j.status === "running" || j.status === "queued");
+        if (hasActive) {
+          pollRef.current = setInterval(loadJobs, 5000);
+        }
+        return () => { if (pollRef.current) clearInterval(pollRef.current); };
+      }, [jobs]);
+
+      async function cancelJob(jobId) {
+        try {
+          await api(`/api/scope-gap/jobs/${jobId}`, { method: "DELETE" });
+          loadJobs();
+        } catch (e) { setError(e.message); }
+      }
+
+      async function continueJob(jobId) {
+        try {
+          const res = await api(`/api/scope-gap/jobs/${jobId}/continue`, { method: "POST" });
+          alert(`Continuation job created: ${res.job_id}`);
+          loadJobs();
+        } catch (e) { setError(e.message); }
+      }
+
+      async function viewResult(jobId) {
+        try {
+          const res = await api(`/api/scope-gap/jobs/${jobId}/result`);
+          alert(JSON.stringify(res, null, 2));
+        } catch (e) { setError(e.message); }
+      }
+
+      return (
+        <div style={{ maxWidth: 1000, margin: "0 auto" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <h2 style={{ fontSize: 16, fontWeight: 700 }}>Background Jobs</h2>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              {jobs.some(j => j.status === "running" || j.status === "queued") && (
+                <Badge color="blue">
+                  <span className="spinner spinner-sm" style={{ marginRight: 4 }} /> Polling every 5s
+                </Badge>
+              )}
+              <Btn variant="primary" size="sm" onClick={loadJobs} loading={loading}>Refresh</Btn>
+            </div>
+          </div>
+          <ErrorBanner error={error} onDismiss={() => setError(null)} />
+
+          {loading && jobs.length === 0 ? (
+            <div style={{ textAlign: "center", padding: 40 }}><span className="spinner" /></div>
+          ) : jobs.length === 0 ? (
+            <Card><EmptyState title="No jobs" description="Submit a background job from the Dashboard." /></Card>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {jobs.map(job => (
+                <Card key={job.job_id || job.id}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                        <StatusDot status={job.status} />
+                        <span style={{ fontWeight: 700, fontSize: 13 }}>
+                          Project {job.project_id}
+                        </span>
+                        {job.trade && <Badge color="blue">{job.trade}</Badge>}
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "monospace" }}>
+                        Job ID: {job.job_id || job.id}
+                      </div>
+                      {job.progress != null && job.status === "running" && (
+                        <div style={{ marginTop: 8 }}>
+                          <div style={{
+                            width: 250, height: 6, borderRadius: 3, background: "var(--border)",
+                            overflow: "hidden",
+                          }}>
+                            <div style={{
+                              width: `${Math.min(job.progress * 100, 100)}%`, height: "100%",
+                              background: "var(--blue)", borderRadius: 3,
+                              transition: "width 0.5s ease",
+                            }} />
+                          </div>
+                          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+                            {(job.progress * 100).toFixed(0)}% complete
+                          </div>
+                        </div>
+                      )}
+                      <div style={{ display: "flex", gap: 16, marginTop: 8, fontSize: 11, color: "var(--text-muted)" }}>
+                        {job.created_at && <span>Created: {formatDate(job.created_at)}</span>}
+                        {job.started_at && <span>Started: {formatDate(job.started_at)}</span>}
+                        {job.completed_at && <span>Completed: {formatDate(job.completed_at)}</span>}
+                      </div>
+                      {job.error && (
+                        <div style={{ marginTop: 6, fontSize: 12, color: "var(--error)", fontWeight: 500 }}>
+                          Error: {job.error}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                      {(job.status === "completed" || job.status === "partial") && (
+                        <Btn variant="primary" size="sm" onClick={() => viewResult(job.job_id || job.id)}>View Result</Btn>
+                      )}
+                      {job.status === "partial" && (
+                        <Btn variant="gold" size="sm" onClick={() => continueJob(job.job_id || job.id)}>Continue</Btn>
+                      )}
+                      {(job.status === "running" || job.status === "queued") && (
+                        <Btn variant="danger" size="sm" onClick={() => cancelJob(job.job_id || job.id)}>Cancel</Btn>
+                      )}
+                    </div>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // App Shell
+    // =========================================================================
+    function App() {
+      const [page, setPage] = React.useState("dashboard");
+      const [result, setResult] = React.useState(null);
+
+      function handleResult(r) {
+        setResult(r);
+        setPage("results");
+      }
+
+      const tabs = [
+        { id: "dashboard", label: "Dashboard", icon: "\u25B6" },
+        { id: "results",   label: "Results",   icon: "\u2630" },
+        { id: "sessions",  label: "Sessions",  icon: "\u2398" },
+        { id: "jobs",      label: "Jobs",      icon: "\u2699" },
+      ];
+
+      return (
+        <React.Fragment>
+          {/* Header */}
+          <header style={{
+            background: "var(--header-bg)", borderBottom: "1px solid var(--header-border)",
+            padding: "0 24px", display: "flex", alignItems: "center", justifyContent: "space-between",
+            height: 56, flexShrink: 0, position: "sticky", top: 0, zIndex: 50,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{
+                width: 32, height: 32, borderRadius: 8, display: "flex",
+                alignItems: "center", justifyContent: "center", fontWeight: 800,
+                fontSize: 14, background: "linear-gradient(135deg, #C4841D, #E8A842)",
+                color: "#fff",
+              }}>
+                iF
+              </div>
+              <span style={{ color: "#fff", fontWeight: 700, fontSize: 15, letterSpacing: "-0.02em" }}>
+                ScopeAI
+              </span>
+              <span style={{ color: "#94A3B8", fontSize: 12, fontWeight: 400, marginLeft: 4 }}>
+                Scope Gap Pipeline
+              </span>
+            </div>
+            <nav style={{ display: "flex", gap: 2, height: "100%" }}>
+              {tabs.map(tab => {
+                const active = page === tab.id;
+                return (
+                  <button key={tab.id} onClick={() => setPage(tab.id)} style={{
+                    display: "flex", alignItems: "center", gap: 6,
+                    padding: "0 16px", height: "100%",
+                    background: active ? "rgba(255,255,255,0.08)" : "transparent",
+                    color: active ? "#fff" : "#94A3B8",
+                    border: "none", borderBottom: active ? "2px solid var(--gold)" : "2px solid transparent",
+                    cursor: "pointer", fontSize: 13, fontWeight: active ? 600 : 400,
+                    fontFamily: "inherit", transition: "all 0.15s ease",
+                  }}>
+                    <span style={{ fontSize: 14 }}>{tab.icon}</span>
+                    {tab.label}
+                    {tab.id === "results" && result && (
+                      <span style={{
+                        width: 6, height: 6, borderRadius: "50%",
+                        background: "var(--success)", marginLeft: 2,
+                      }} />
+                    )}
+                  </button>
+                );
+              })}
+            </nav>
+            <div style={{ fontSize: 11, color: "#64748B" }}>
+              API: <span style={{ color: "#94A3B8", fontFamily: "monospace" }}>{API_BASE_URL}</span>
+            </div>
+          </header>
+
+          {/* Main Content */}
+          <main style={{ flex: 1, padding: "24px 24px 48px" }}>
+            {page === "dashboard" && <DashboardPage onResult={handleResult} />}
+            {page === "results" && <ResultsPage result={result} />}
+            {page === "sessions" && <SessionsPage />}
+            {page === "jobs" && <JobsPage />}
+          </main>
+
+          {/* Footer */}
+          <footer style={{
+            padding: "12px 24px", borderTop: "1px solid var(--border)",
+            fontSize: 11, color: "var(--text-dim)", textAlign: "center",
+            background: "var(--card)", flexShrink: 0,
+          }}>
+            iFieldSmart ScopeAI — Scope Gap Pipeline Test UI — Local Development Only
+          </footer>
+        </React.Fragment>
+      );
+    }
+
+    // =========================================================================
+    // Mount
+    // =========================================================================
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
+</body>
+</html>

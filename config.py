@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     api_base_url: str = "https://mongo.ifieldsmart.com"
     summary_by_trade_path: str = "/api/drawingText/summaryByTrade"
     summary_by_trade_and_set_path: str = "/api/drawingText/summaryByTradeAndSet"
+    by_trade_path: str = "/api/drawingText/byTrade"
+    by_trade_and_set_path: str = "/api/drawingText/byTradeAndSet"
     api_auth_token: str = ""
     api_timeout_seconds: int = 30
 

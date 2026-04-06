@@ -89,6 +89,8 @@ class QualityAgent(BaseAgent):
         )
 
         raw = response.choices[0].message.content or ""
+        if hasattr(response, "usage") and response.usage:
+            self._last_tokens_used = response.usage.total_tokens
         return self._parse_response(raw, classified)
 
     def _serialize_items_for_prompt(self, items: list[ClassifiedItem]) -> str:
@@ -118,13 +120,17 @@ class QualityAgent(BaseAgent):
 
         parsed = self._try_parse_json(raw)
         if parsed is None:
-            logger.warning("Quality agent: invalid LLM response, returning default report")
+            logger.error(
+                "Quality agent: LLM returned unparseable response (%d chars). "
+                "Marking accuracy as 0.0 and flagging for manual review.",
+                len(raw),
+            )
             return QualityReport(
-                accuracy_score=1.0,
+                accuracy_score=0.0,
                 corrections=[],
                 validated_items=all_ids,
                 removed_items=[],
-                summary="Quality review returned invalid response; all items accepted.",
+                summary="Quality review failed: LLM response could not be parsed. Manual review required.",
             )
 
         accuracy = float(parsed.get("accuracy_score", 1.0))

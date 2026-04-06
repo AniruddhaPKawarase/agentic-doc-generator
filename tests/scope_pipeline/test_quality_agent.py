@@ -159,8 +159,9 @@ async def test_quality_agent_returns_default_on_invalid_response():
     result = await agent.run(merged, emitter)
     report = result.data
 
-    # Default: assume high accuracy, no corrections
-    assert report.accuracy_score == 1.0
+    # Parse failure: flag for manual review with 0.0 accuracy (not a false 1.0)
+    assert report.accuracy_score == 0.0
     assert report.corrections == []
     assert report.removed_items == []
-    assert len(report.validated_items) == 3  # all items pass through
+    assert len(report.validated_items) == 3  # items preserved for manual review
+    assert "manual review" in report.summary.lower()

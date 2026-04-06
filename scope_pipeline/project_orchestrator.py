@@ -88,8 +88,13 @@ class ProjectOrchestrator:
             project_name=project_name,
         )
 
-        # Step 2: Discover trades
-        all_trades: list[str] = await self._trade_discovery.discover_trades(project_id)
+        # Step 2: Discover trades (returns list[dict] with "trade" + "record_count")
+        raw_trades = await self._trade_discovery.discover_trades(project_id)
+        all_trades: list[str] = [
+            entry["trade"] if isinstance(entry, dict) else str(entry)
+            for entry in raw_trades
+            if (entry.get("trade") if isinstance(entry, dict) else entry)
+        ]
 
         # Apply specific_trades filter if requested
         if specific_trades:

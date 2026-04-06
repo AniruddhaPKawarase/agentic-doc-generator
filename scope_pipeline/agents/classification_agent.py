@@ -92,6 +92,8 @@ class ClassificationAgent(BaseAgent):
         )
 
         raw = response.choices[0].message.content or ""
+        if hasattr(response, "usage") and response.usage:
+            self._last_tokens_used = response.usage.total_tokens
         return self._parse_response(raw, scope_items, trade)
 
     def _parse_response(

@@ -194,6 +194,38 @@ class APIClient:
         """Returns a lightweight metadata stub — trade detection is keyword-only."""
         return {"trades": [], "csi_divisions": []}
 
+    async def probe_trade_exists(
+        self,
+        project_id: int,
+        trade: str,
+        set_id: Optional[Union[int, str]] = None,
+    ) -> int:
+        """Quickly check if a trade has records by fetching page 1 only.
+
+        Uses the raw byTrade endpoint (faster, lighter than summaryByTrade)
+        to check record existence without full pagination.
+
+        Returns record count from page 1 (0 if empty or error).
+        """
+        if not self._http:
+            return 0
+
+        path = settings.by_trade_and_set_path if set_id else settings.by_trade_path
+        if not path.startswith("/"):
+            path = f"/{path}"
+        params: dict[str, Any] = {"projectId": project_id, "trade": trade}
+        if set_id is not None:
+            params["setId"] = set_id
+
+        try:
+            resp = await self._http.get(path, params=params)
+            resp.raise_for_status()
+            body = resp.json()
+            records = body.get("data", {}).get("list", [])
+            return len(records)
+        except Exception:
+            return 0
+
     # ── Internal helpers ──────────────────────────────────────────────
 
     async def _fetch_all_pages(

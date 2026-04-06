@@ -274,9 +274,9 @@ async def get_status(
         else:
             status = "pending"
 
-        items_count = container.latest_result.items.__len__() if (
-            container.latest_result and hasattr(container.latest_result, "items")
-        ) else 0
+        latest = container.latest_result
+        result_items = getattr(latest, "items", None) if latest else None
+        items_count = len(result_items) if result_items is not None else 0
         total_items += items_count
 
         trade_statuses.append(

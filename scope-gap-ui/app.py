@@ -14,7 +14,8 @@ import streamlit as st
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
 API_BASE = "http://54.197.189.113:8003"
-REQUEST_TIMEOUT = 60
+REQUEST_TIMEOUT = 300          # 5 min — 7-agent pipeline can take 200-300s
+GENERATE_TIMEOUT = 600         # 10 min — max for large datasets with backprop
 
 PROJECTS = [
     {"id": "PRJ-001", "project_id": 7276, "name": "450-460 JR PKWY Phase II",
@@ -120,23 +121,32 @@ def _get(path: str, params: dict = None) -> Optional[dict]:
     except requests.exceptions.ConnectionError:
         return None
     except requests.exceptions.Timeout:
-        return {"error": "Request timed out"}
+        return {"error": f"Request timed out after {REQUEST_TIMEOUT}s"}
+    except requests.exceptions.HTTPError as exc:
+        status = exc.response.status_code if exc.response else "unknown"
+        body = exc.response.text[:200] if exc.response else ""
+        return {"error": f"API error {status}: {body}"}
     except Exception as exc:
-        return {"error": str(exc)}
+        return {"error": f"Unexpected error: {str(exc)[:200]}"}
 
 
-def _post(path: str, payload: dict) -> Optional[dict]:
+def _post(path: str, payload: dict, timeout: int = 0) -> Optional[dict]:
+    effective_timeout = timeout or REQUEST_TIMEOUT
     try:
         r = requests.post(f"{API_BASE}{path}", json=payload,
-                          timeout=REQUEST_TIMEOUT)
+                          timeout=effective_timeout)
         r.raise_for_status()
         return r.json()
     except requests.exceptions.ConnectionError:
         return None
     except requests.exceptions.Timeout:
-        return {"error": "Request timed out"}
+        return {"error": f"Request timed out after {effective_timeout}s. The pipeline may still be running — check status before retrying."}
+    except requests.exceptions.HTTPError as exc:
+        status = exc.response.status_code if exc.response else "unknown"
+        body = exc.response.text[:200] if exc.response else ""
+        return {"error": f"API error {status}: {body}"}
     except Exception as exc:
-        return {"error": str(exc)}
+        return {"error": f"Unexpected error: {str(exc)[:200]}"}
 
 
 def api_health():
@@ -157,7 +167,202 @@ def api_get_drawings(project_id: int):
 
 
 def api_run_scope_gap(project_id: int, trade: str):
-    return _post("/api/scope-gap/generate", {"project_id": project_id, "trade": trade})
+    """Fallback synchronous call (no progress). Used only if streaming fails."""
+    return _post("/api/scope-gap/generate", {"project_id": project_id, "trade": trade},
+                 timeout=GENERATE_TIMEOUT)
+
+
+# ── Pipeline stage weights for the progress bar ──
+# Weights reflect approximate time each stage takes relative to total.
+# The pipeline runs: data_fetch → extraction → (classification|ambiguity|gotcha) → completeness → quality → documents
+# Backpropagation can repeat extraction→completeness up to 3 times.
+_STAGE_WEIGHTS = {
+    "data_fetch":     0.10,
+    "extraction":     0.25,
+    "classification": 0.15,
+    "ambiguity":      0.10,
+    "gotcha":         0.10,
+    "completeness":   0.05,
+    "quality":        0.10,
+    "documents":      0.10,
+    "finalize":       0.05,
+}
+
+_AGENT_DISPLAY = {
+    "extraction":     ("📄", "Extracting scope items from drawings"),
+    "classification": ("🏷️", "Classifying items by trade & CSI code"),
+    "ambiguity":      ("⚠️", "Detecting trade ambiguities & overlaps"),
+    "gotcha":         ("🔍", "Identifying hidden risks & gotchas"),
+    "completeness":   ("✅", "Checking coverage completeness"),
+    "quality":        ("⭐", "Running quality review"),
+    "document":       ("📝", "Generating reports & documents"),
+}
+
+
+def api_run_scope_gap_streaming(project_id: int, trade: str, progress_bar, status_text):
+    """Stream the pipeline via SSE, updating a Streamlit progress bar in real time.
+
+    Returns the final result dict, or an error dict.
+    """
+    payload = json.dumps({"project_id": project_id, "trade": trade})
+    url = f"{API_BASE}/api/scope-gap/stream"
+
+    progress = 0.0
+    completed_agents = set()
+    current_attempt = 1
+    final_result = None
+
+    try:
+        with requests.post(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
+            stream=True,
+            timeout=None,  # No timeout — we rely on SSE events to know when done
+        ) as resp:
+            if resp.status_code != 200:
+                return {"error": f"Stream failed with status {resp.status_code}: {resp.text[:200]}"}
+
+            event_type = ""
+            event_data = ""
+
+            for line in resp.iter_lines(decode_unicode=True):
+                if line is None:
+                    continue
+                line = line.strip() if isinstance(line, str) else line.decode().strip()
+
+                if line.startswith("event:"):
+                    event_type = line[len("event:"):].strip()
+                    continue
+                elif line.startswith("data:"):
+                    event_data = line[len("data:"):].strip()
+                elif line == "" and event_type:
+                    # End of event — process it
+                    progress, final_result = _process_sse_event(
+                        event_type, event_data,
+                        progress, completed_agents, current_attempt,
+                        progress_bar, status_text,
+                    )
+                    if event_type == "backpropagation":
+                        try:
+                            bp_data = json.loads(event_data)
+                            current_attempt = bp_data.get("attempt", current_attempt) + 1
+                        except (json.JSONDecodeError, TypeError):
+                            current_attempt += 1
+                    event_type = ""
+                    event_data = ""
+
+                    if final_result is not None:
+                        progress_bar.progress(1.0)
+                        return final_result
+
+    except requests.exceptions.ConnectionError:
+        return None
+    except Exception as exc:
+        return {"error": f"Streaming error: {str(exc)[:200]}"}
+
+    # If we exit the loop without a result, stream ended unexpectedly
+    if final_result is not None:
+        return final_result
+    return {"error": "Stream ended without a result. The pipeline may have failed — check server logs."}
+
+
+def _process_sse_event(
+    event_type: str, event_data: str,
+    progress: float, completed_agents: set, current_attempt: int,
+    progress_bar, status_text,
+) -> tuple[float, dict | None]:
+    """Process a single SSE event and update the progress bar.
+
+    Returns (new_progress, final_result_or_None).
+    """
+    try:
+        data = json.loads(event_data) if event_data else {}
+    except (json.JSONDecodeError, TypeError):
+        data = {}
+
+    final_result = None
+
+    if event_type == "data_fetch":
+        progress = _STAGE_WEIGHTS["data_fetch"]
+        status_text.markdown(f"📡 **Fetching drawing records** from API…")
+
+    elif event_type == "agent_start":
+        agent = data.get("agent", "")
+        icon, label = _AGENT_DISPLAY.get(agent, ("⚙️", f"Running {agent}"))
+        attempt_label = f" (attempt {current_attempt})" if current_attempt > 1 else ""
+        status_text.markdown(f"{icon} **{label}**{attempt_label}")
+
+    elif event_type == "agent_complete":
+        agent = data.get("agent", "")
+        elapsed = data.get("elapsed_ms", 0)
+        completed_agents.add(agent)
+        weight = _STAGE_WEIGHTS.get(agent, 0.05)
+        progress = min(progress + weight, 0.95)
+        progress_bar.progress(progress)
+        icon, label = _AGENT_DISPLAY.get(agent, ("✓", agent))
+        secs = elapsed / 1000.0
+        status_text.markdown(f"✓ **{agent.title()}** done in {secs:.1f}s")
+
+    elif event_type == "agent_progress":
+        msg = data.get("message", "")
+        if msg:
+            status_text.markdown(f"⏳ {msg}")
+
+    elif event_type == "completeness":
+        pct = data.get("overall_pct", 0)
+        is_complete = data.get("is_complete", False)
+        progress = min(progress + _STAGE_WEIGHTS["completeness"], 0.95)
+        progress_bar.progress(progress)
+        if is_complete:
+            status_text.markdown(f"✅ **Completeness: {pct:.0f}%** — threshold met!")
+        else:
+            status_text.markdown(f"⚠️ **Completeness: {pct:.0f}%** — below threshold, retrying…")
+
+    elif event_type == "backpropagation":
+        attempt = data.get("attempt", 1)
+        missing = data.get("missing_drawings", [])
+        # Reset progress partially for retry
+        progress = max(progress - 0.25, _STAGE_WEIGHTS["data_fetch"])
+        progress_bar.progress(progress)
+        status_text.markdown(
+            f"🔄 **Backpropagation** — attempt {attempt} incomplete, "
+            f"retrying {len(missing)} missing drawing(s)…"
+        )
+
+    elif event_type in ("pipeline_complete", "pipeline_partial"):
+        items = data.get("items_count", 0)
+        attempts = data.get("attempts", 1)
+        pct = data.get("completeness_pct", 0)
+        progress = 0.95
+        progress_bar.progress(progress)
+        if event_type == "pipeline_complete":
+            status_text.markdown(
+                f"✅ **Pipeline complete** — {items} items, {pct:.0f}% coverage, "
+                f"{attempts} attempt(s)"
+            )
+        else:
+            status_text.markdown(
+                f"⚠️ **Pipeline partial** — {items} items, {pct:.0f}% coverage, "
+                f"{attempts} attempt(s)"
+            )
+
+    elif event_type == "result":
+        # This is the final result payload
+        final_result = data
+        progress_bar.progress(1.0)
+        status_text.markdown("🎉 **Done!** Generating report…")
+
+    elif event_type == "error":
+        error_msg = data.get("error", "Unknown pipeline error")
+        final_result = {"error": error_msg}
+
+    elif event_type == "agent_failed":
+        agent = data.get("agent", "")
+        error = data.get("error", "")
+        status_text.markdown(f"❌ **{agent.title()}** failed: {error[:100]}")
+
+    return progress, final_result
 
 
 def api_run_all(project_id: int, force: bool = False):
@@ -826,7 +1031,22 @@ def page_workspace():
                 drawings_resp = api_get_drawings(pid)
 
             if drawings_resp and "error" not in drawings_resp:
-                tree = drawings_resp
+                # API returns {"categories": {discipline: {drawings: [...], specs: [...]}}, ...}
+                raw_cats = drawings_resp.get("categories", {})
+                tree = {}
+                for discipline, data in raw_cats.items():
+                    names = []
+                    if isinstance(data, dict):
+                        for d in data.get("drawings", []):
+                            names.append(d if isinstance(d, str) else d.get("drawingName", str(d)))
+                        for s in data.get("specs", []):
+                            names.append(s if isinstance(s, str) else s.get("drawingName", str(s)))
+                    elif isinstance(data, list):
+                        names = [x if isinstance(x, str) else str(x) for x in data]
+                    if names:
+                        tree[discipline] = names
+                if not tree:
+                    tree = MOCK_DRAWINGS
             else:
                 tree = MOCK_DRAWINGS
 
@@ -935,7 +1155,12 @@ def _workspace_export_view(proj: dict):
         with st.spinner("Loading trades…"):
             resp = api_get_trades(pid)
         if resp and "error" not in resp:
-            trades_list = resp.get("trades", resp) if isinstance(resp, dict) else resp
+            raw_trades = resp.get("trades", resp) if isinstance(resp, dict) else resp
+            # Normalize: API returns [{"trade": "Electrical", ...}] → ["Electrical", ...]
+            if isinstance(raw_trades, list) and raw_trades and isinstance(raw_trades[0], dict):
+                trades_list = [t.get("trade", str(t)) for t in raw_trades if t.get("trade")]
+            else:
+                trades_list = raw_trades
             st.session_state.trades_data[pid] = trades_list
         else:
             st.session_state.trades_data[pid] = MOCK_TRADES
@@ -1016,18 +1241,47 @@ def _workspace_export_view(proj: dict):
                     st.session_state.workspace_view = "report"
                     st.rerun()
             else:
-                if st.button(f"Generate", key=f"gen_{trade}_{i}"):
-                    with st.spinner(f"Generating {trade} scope gap…"):
-                        result = api_run_scope_gap(pid, trade)
-                    if result and "error" not in result:
-                        st.session_state.scope_results[trade] = result
-                        st.session_state.selected_trade = trade
-                        st.success(f"{trade} analysis complete!")
-                        st.rerun()
-                    elif result is None:
-                        st.error("Cannot connect to API. Please check server status.")
+                gen_lock_key = f"gen_lock_{trade}"
+                is_generating = st.session_state.get(gen_lock_key, False)
+                if st.button(
+                    "Generating…" if is_generating else "Generate",
+                    key=f"gen_{trade}_{i}",
+                    disabled=is_generating,
+                ):
+                    # Quick health check before expensive pipeline call
+                    health = api_health()
+                    if health is None:
+                        st.error("API server unreachable. Please check server status.")
+                    elif "error" in (health or {}):
+                        st.error(f"API unhealthy: {health.get('error')}")
                     else:
-                        st.error(f"Error: {result.get('error', 'Unknown error')}")
+                        st.session_state[gen_lock_key] = True
+
+                        # --- Progress bar UI ---
+                        progress_bar = st.progress(0.0, text="Starting pipeline…")
+                        status_text = st.empty()
+                        status_text.markdown("🚀 **Connecting to pipeline…**")
+
+                        result = api_run_scope_gap_streaming(
+                            pid, trade, progress_bar, status_text,
+                        )
+
+                        st.session_state[gen_lock_key] = False
+
+                        if result and "error" not in result:
+                            st.session_state.scope_results[trade] = result
+                            st.session_state.selected_trade = trade
+                            progress_bar.progress(1.0, text="Complete!")
+                            status_text.empty()
+                            st.success(f"{trade} analysis complete!")
+                            time.sleep(1)
+                            st.rerun()
+                        elif result is None:
+                            progress_bar.empty()
+                            st.error("Cannot connect to API. Please check server status.")
+                        else:
+                            progress_bar.empty()
+                            st.error(f"Error: {result.get('error', 'Unknown error')}")
 
         st.markdown(
             '<div style="height:1px;background:#F1F5F9;margin:4px 0;"></div>',
@@ -1105,11 +1359,18 @@ def _workspace_report_view(proj: dict):
         return
 
     # ── Score cards ──────────────────────────────────────────────────────────
-    scores = result.get("scores", {})
-    completeness = result.get("completeness_score", scores.get("completeness", 0))
-    quality = result.get("quality_score", scores.get("quality", 0))
-    confidence = result.get("confidence", scores.get("confidence", 0))
-    attempts_count = result.get("attempts", 1)
+    # Pipeline returns: completeness: {overall_pct, drawing_coverage_pct, csi_coverage_pct}
+    #                   quality: {accuracy_score, ...}
+    #                   pipeline_stats: {attempts, tokens_used, total_ms, ...}
+    completeness_data = result.get("completeness", {})
+    quality_data = result.get("quality", {})
+    stats_data = result.get("pipeline_stats", {})
+
+    completeness_pct = completeness_data.get("overall_pct", 0) if isinstance(completeness_data, dict) else 0
+    quality_score = quality_data.get("accuracy_score", 0) if isinstance(quality_data, dict) else 0
+    drawing_cov = completeness_data.get("drawing_coverage_pct", 0) if isinstance(completeness_data, dict) else 0
+    attempts_count = stats_data.get("attempts", 1) if isinstance(stats_data, dict) else 1
+    items_count = len(result.get("items", []))
 
     s1, s2, s3, s4 = st.columns(4)
     def _score_card(col, label, value, color):
@@ -1124,36 +1385,65 @@ def _workspace_report_view(proj: dict):
                 unsafe_allow_html=True,
             )
 
-    _score_card(s1, "Completeness", completeness, "#22C55E")
-    _score_card(s2, "Quality", quality, "#3B82F6")
-    _score_card(s3, "Confidence", confidence, "#8B5CF6")
+    _score_card(s1, "Completeness", completeness_pct, "#22C55E")
+    _score_card(s2, "Quality", quality_score, "#3B82F6")
+    _score_card(s3, "Drawing Coverage", drawing_cov, "#8B5CF6")
     with s4:
         st.markdown(
             f'<div class="score-card">'
-            f'<div class="score-label">Attempts</div>'
-            f'<div class="score-value">{attempts_count}</div>'
-            f'<div class="score-sub">Backpropagation loops</div>'
+            f'<div class="score-label">Items / Attempts</div>'
+            f'<div class="score-value">{items_count} / {attempts_count}</div>'
+            f'<div class="score-sub">Scope items extracted</div>'
             f"</div>",
             unsafe_allow_html=True,
         )
 
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── Reference panel toggle ────────────────────────────────────────────────
-    col_main, col_ref = (
-        st.columns([3, 1]) if st.session_state.ref_panel_open else (st, None)
-    )
-    if col_ref is None:
-        _render_scope_items(result, trade)
+    # ── Document downloads ───────────────────────────────────────────────────
+    documents = result.get("documents", {})
+    if isinstance(documents, dict) and any(documents.get(k) for k in ("word_path", "pdf_path", "csv_path", "json_path")):
+        st.markdown(
+            '<div style="display:flex;gap:8px;margin:8px 0 16px;">',
+            unsafe_allow_html=True,
+        )
+        doc_cols = st.columns(4)
+        doc_labels = [
+            ("word_path", "📄 Word", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+            ("pdf_path", "📕 PDF", "application/pdf"),
+            ("csv_path", "📊 CSV", "text/csv"),
+            ("json_path", "📋 JSON", "application/json"),
+        ]
+        for col, (key, label, _mime) in zip(doc_cols, doc_labels):
+            doc_path = documents.get(key)
+            if doc_path:
+                with col:
+                    st.markdown(
+                        f'<div style="background:#F0F9FF;border:1px solid #BAE6FD;'
+                        f'border-radius:8px;padding:8px 12px;text-align:center;'
+                        f'font-size:12px;font-weight:600;color:#0369A1;">'
+                        f'{label}</div>',
+                        unsafe_allow_html=True,
+                    )
     else:
-        with col_main:
-            _render_scope_items(result, trade)
-        with col_ref:
+        st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Source documents sidebar ──────────────────────────────────────────────
+    # Collect unique source drawings from all items
+    all_source_drawings = _extract_source_drawings(result)
+
+    col_main, col_ref = st.columns([3, 1.2])
+
+    with col_main:
+        _render_scope_items(result, trade)
+
+    with col_ref:
+        if st.session_state.ref_panel_open:
             _render_reference_panel()
+        else:
+            _render_source_documents_sidebar(all_source_drawings, result)
 
 
 def _render_scope_items(result: dict, trade: str):
-    scope_items = result.get("scope_items", result.get("items", []))
+    scope_items = result.get("items", result.get("scope_items", []))
     ambiguities = result.get("ambiguities", [])
     gotchas = result.get("gotchas", [])
 
@@ -1172,64 +1462,290 @@ def _render_scope_items(result: dict, trade: str):
             unsafe_allow_html=True,
         )
     else:
-        for i, item in enumerate(scope_items):
-            text = item if isinstance(item, str) else item.get("text", item.get("description", str(item)))
-            sources = item.get("sources", []) if isinstance(item, dict) else []
+        # Group items by drawing_name for clarity
+        grouped: dict[str, list] = {}
+        for item in scope_items:
+            if isinstance(item, dict):
+                dn = item.get("drawing_name", "Unknown")
+            else:
+                dn = "Unknown"
+            grouped.setdefault(dn, []).append(item)
 
-            col_chk, col_text, col_link = st.columns([0.3, 8, 0.5])
-            with col_chk:
-                st.checkbox("", key=f"scope_chk_{trade}_{i}", label_visibility="collapsed")
-            with col_text:
-                st.markdown(
-                    f'<div class="scope-item-text">{text}</div>',
-                    unsafe_allow_html=True,
-                )
-            with col_link:
-                if st.button("🔗", key=f"ref_{trade}_{i}",
-                             help="View source references"):
-                    st.session_state.ref_panel_open = True
-                    st.session_state.ref_panel_items = sources
-                    st.rerun()
+        for drawing_name, items_in_drawing in grouped.items():
+            drawing_title = ""
+            if items_in_drawing and isinstance(items_in_drawing[0], dict):
+                drawing_title = items_in_drawing[0].get("drawing_title", "") or ""
 
-            st.markdown(
-                '<div style="height:1px;background:#F8FAFC;margin:2px 0;"></div>',
-                unsafe_allow_html=True,
-            )
+            header_text = f"📄 {drawing_name}"
+            if drawing_title:
+                header_text += f" — {drawing_title}"
+
+            with st.expander(f"{header_text} ({len(items_in_drawing)} items)", expanded=True):
+                for i, item in enumerate(items_in_drawing):
+                    text = item if isinstance(item, str) else item.get("text", str(item))
+                    # Build source reference from ClassifiedItem fields
+                    source_ref = _build_source_ref(item) if isinstance(item, dict) else []
+
+                    col_text, col_meta, col_link = st.columns([6, 2.5, 0.5])
+                    with col_text:
+                        st.markdown(
+                            f'<div class="scope-item-text">{text}</div>',
+                            unsafe_allow_html=True,
+                        )
+                    with col_meta:
+                        if isinstance(item, dict):
+                            csi = item.get("csi_code", "") or item.get("csi_division", "")
+                            conf = item.get("confidence", 0)
+                            meta_parts = []
+                            if csi:
+                                meta_parts.append(f'<span style="background:#EFF6FF;color:#1E40AF;'
+                                                  f'border-radius:4px;padding:2px 6px;font-size:10px;'
+                                                  f'font-weight:600;">{csi}</span>')
+                            if conf:
+                                pct = conf * 100 if conf <= 1 else conf
+                                meta_parts.append(f'<span style="color:#64748B;font-size:10px;">'
+                                                  f'{pct:.0f}%</span>')
+                            page = item.get("page")
+                            if page:
+                                meta_parts.append(f'<span style="color:#94A3B8;font-size:10px;">'
+                                                  f'p.{page}</span>')
+                            if meta_parts:
+                                st.markdown(
+                                    f'<div style="display:flex;gap:6px;align-items:center;'
+                                    f'padding-top:4px;">{"".join(meta_parts)}</div>',
+                                    unsafe_allow_html=True,
+                                )
+                    with col_link:
+                        if st.button("🔗", key=f"ref_{trade}_{drawing_name}_{i}",
+                                     help="View source references"):
+                            st.session_state.ref_panel_open = True
+                            st.session_state.ref_panel_items = source_ref
+                            st.rerun()
+
+                    st.markdown(
+                        '<div style="height:1px;background:#F1F5F9;margin:2px 0;"></div>',
+                        unsafe_allow_html=True,
+                    )
 
     # ── Ambiguities ──
     if ambiguities:
-        with st.expander(f"⚠️ Ambiguities ({len(ambiguities)})", expanded=False):
+        with st.expander(f"⚠️ Trade Ambiguities ({len(ambiguities)})", expanded=False):
             for amb in ambiguities:
-                text = amb if isinstance(amb, str) else amb.get("text", str(amb))
-                st.markdown(
-                    f'<div class="banner-warn" style="margin-bottom:6px;">{text}</div>',
-                    unsafe_allow_html=True,
-                )
+                if isinstance(amb, dict):
+                    text = amb.get("text", str(amb))
+                    competing = amb.get("competing_trades", [])
+                    severity = amb.get("severity", "medium")
+                    sev_color = {"high": "#FEE2E2", "medium": "#FEF3C7", "low": "#DBEAFE"}.get(severity, "#FEF3C7")
+                    refs = amb.get("drawing_refs", [])
+                    st.markdown(
+                        f'<div style="background:{sev_color};border-radius:8px;padding:10px 12px;'
+                        f'margin-bottom:6px;font-size:12px;">'
+                        f'<b>{text}</b>'
+                        f'{"<br><span style=color:#64748B;>Competing trades: " + ", ".join(competing) + "</span>" if competing else ""}'
+                        f'{"<br><span style=color:#94A3B8;font-size:10px;>Drawings: " + ", ".join(refs) + "</span>" if refs else ""}'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        f'<div class="banner-warn" style="margin-bottom:6px;">{amb}</div>',
+                        unsafe_allow_html=True,
+                    )
 
     # ── Gotchas ──
     if gotchas:
-        with st.expander(f"🎯 Gotchas ({len(gotchas)})", expanded=False):
+        with st.expander(f"🎯 Hidden Risks / Gotchas ({len(gotchas)})", expanded=False):
             for g in gotchas:
-                text = g if isinstance(g, str) else g.get("text", str(g))
-                severity = g.get("severity", "medium") if isinstance(g, dict) else "medium"
-                color_map = {"high": "#FEE2E2", "medium": "#FEF3C7", "low": "#DBEAFE"}
-                bg = color_map.get(severity, "#FEF3C7")
-                st.markdown(
-                    f'<div style="background:{bg};border-radius:8px;padding:10px 12px;'
-                    f'margin-bottom:6px;font-size:12px;">{text}</div>',
-                    unsafe_allow_html=True,
-                )
+                if isinstance(g, dict):
+                    risk_type = g.get("risk_type", "")
+                    desc = g.get("description", g.get("text", str(g)))
+                    severity = g.get("severity", "medium")
+                    recommendation = g.get("recommendation", "")
+                    affected = g.get("affected_trades", [])
+                    refs = g.get("drawing_refs", [])
+                    sev_color = {"high": "#FEE2E2", "medium": "#FEF3C7", "low": "#DBEAFE"}.get(severity, "#FEF3C7")
+                    st.markdown(
+                        f'<div style="background:{sev_color};border-radius:8px;padding:10px 12px;'
+                        f'margin-bottom:6px;font-size:12px;">'
+                        f'{"<b>[" + risk_type.upper() + "]</b> " if risk_type else ""}'
+                        f'{desc}'
+                        f'{"<br><span style=color:#166534;font-size:11px;>💡 " + recommendation + "</span>" if recommendation else ""}'
+                        f'{"<br><span style=color:#64748B;font-size:10px;>Affected: " + ", ".join(affected) + "</span>" if affected else ""}'
+                        f'{"<br><span style=color:#94A3B8;font-size:10px;>Drawings: " + ", ".join(refs) + "</span>" if refs else ""}'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        f'<div style="background:#FEF3C7;border-radius:8px;padding:10px 12px;'
+                        f'margin-bottom:6px;font-size:12px;">{g}</div>',
+                        unsafe_allow_html=True,
+                    )
 
     # ── Raw response preview ──
     with st.expander("🔧 Raw API Response", expanded=False):
         st.json(result)
 
 
+def _build_source_ref(item: dict) -> list[dict]:
+    """Build source reference list from a ClassifiedItem dict.
+
+    ClassifiedItem has: drawing_name, drawing_title, drawing_refs, page,
+    source_snippet, source_type, source_record_id.
+    """
+    refs = []
+    drawing_name = item.get("drawing_name", "")
+    drawing_title = item.get("drawing_title", "")
+    page = item.get("page")
+    snippet = item.get("source_snippet", "")
+    source_type = item.get("source_type", "drawing")
+    record_id = item.get("source_record_id", "")
+
+    # Primary source: the item's own drawing
+    if drawing_name:
+        refs.append({
+            "drawing_name": drawing_name,
+            "drawing_title": drawing_title or "",
+            "page": str(page) if page else "",
+            "source_snippet": snippet,
+            "source_type": source_type,
+            "record_id": record_id,
+        })
+
+    # Additional cross-references from drawing_refs
+    for ref_name in item.get("drawing_refs", []):
+        if ref_name and ref_name != drawing_name:
+            refs.append({
+                "drawing_name": ref_name,
+                "drawing_title": "",
+                "page": "",
+                "source_snippet": "",
+                "source_type": "cross-reference",
+                "record_id": "",
+            })
+
+    return refs
+
+
+def _extract_source_drawings(result: dict) -> list[dict]:
+    """Extract unique source drawings from all items in the result.
+
+    Returns a sorted list of dicts with drawing_name, drawing_title,
+    item_count, and source_type.
+    """
+    drawing_map: dict[str, dict] = {}
+
+    for item in result.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        dn = item.get("drawing_name", "")
+        if not dn:
+            continue
+        if dn not in drawing_map:
+            drawing_map[dn] = {
+                "drawing_name": dn,
+                "drawing_title": item.get("drawing_title", "") or "",
+                "item_count": 0,
+                "source_type": item.get("source_type", "drawing"),
+                "pages": set(),
+            }
+        drawing_map[dn]["item_count"] += 1
+        page = item.get("page")
+        if page:
+            drawing_map[dn]["pages"].add(str(page))
+
+    # Convert sets to sorted lists for display
+    drawings = []
+    for d in sorted(drawing_map.values(), key=lambda x: x["drawing_name"]):
+        d["pages"] = sorted(d["pages"])
+        drawings.append(d)
+    return drawings
+
+
+def _render_source_documents_sidebar(source_drawings: list[dict], result: dict):
+    """Render the source documents sidebar showing all drawings referenced."""
+    st.markdown(
+        '<div style="font-size:14px;font-weight:700;color:#0F172A;'
+        'margin-bottom:12px;">📎 Source Documents</div>',
+        unsafe_allow_html=True,
+    )
+
+    if not source_drawings:
+        st.markdown(
+            '<div style="font-size:12px;color:#94A3B8;">No source documents found.</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    st.markdown(
+        f'<div style="font-size:11px;color:#64748B;margin-bottom:8px;">'
+        f'{len(source_drawings)} drawing(s) referenced</div>',
+        unsafe_allow_html=True,
+    )
+
+    for d in source_drawings:
+        title = d.get("drawing_title", "")
+        pages = d.get("pages", [])
+        count = d.get("item_count", 0)
+        src_type = d.get("source_type", "drawing")
+        icon = "📐" if src_type == "drawing" else "📄"
+
+        page_text = f"p.{', '.join(pages)}" if pages else ""
+        subtitle_parts = []
+        if page_text:
+            subtitle_parts.append(page_text)
+        subtitle_parts.append(f"{count} item{'s' if count != 1 else ''}")
+        subtitle = " · ".join(subtitle_parts)
+
+        st.markdown(
+            f'<div style="background:#fff;border:1px solid #E2E8F0;border-radius:8px;'
+            f'padding:10px 12px;margin-bottom:6px;">'
+            f'<div style="font-size:12px;font-weight:600;color:#0F172A;">'
+            f'{icon} {d["drawing_name"]}</div>'
+            f'{"<div style=font-size:11px;color:#64748B;>" + title + "</div>" if title else ""}'
+            f'<div style="font-size:10px;color:#94A3B8;margin-top:2px;">{subtitle}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    # Show pipeline stats summary at bottom
+    stats = result.get("pipeline_stats", {})
+    if isinstance(stats, dict):
+        total_ms = stats.get("total_ms", 0)
+        tokens = stats.get("tokens_used", 0)
+        cost = stats.get("estimated_cost_usd", 0)
+        records = stats.get("records_processed", 0)
+
+        st.markdown('<div style="height:1px;background:#E2E8F0;margin:12px 0;"></div>',
+                    unsafe_allow_html=True)
+        st.markdown(
+            '<div style="font-size:11px;font-weight:600;color:#64748B;margin-bottom:6px;">'
+            '⚡ Pipeline Stats</div>',
+            unsafe_allow_html=True,
+        )
+        stat_lines = []
+        if total_ms:
+            stat_lines.append(f"⏱ {total_ms / 1000:.1f}s")
+        if records:
+            stat_lines.append(f"📊 {records} records")
+        if tokens:
+            stat_lines.append(f"🔤 {tokens:,} tokens")
+        if cost:
+            stat_lines.append(f"💰 ${cost:.4f}")
+        st.markdown(
+            '<div style="font-size:10px;color:#94A3B8;">' +
+            "<br>".join(stat_lines) + '</div>',
+            unsafe_allow_html=True,
+        )
+
+
 def _render_reference_panel():
+    """Render the item-level source reference panel (opened by clicking 🔗)."""
     items = st.session_state.ref_panel_items
 
     st.markdown(
-        '<div class="ref-panel-title">📎 Source References</div>',
+        '<div style="font-size:14px;font-weight:700;color:#0F172A;'
+        'margin-bottom:12px;">📎 Item References</div>',
         unsafe_allow_html=True,
     )
 
@@ -1240,21 +1756,34 @@ def _render_reference_panel():
 
     if not items:
         st.markdown(
-            '<div class="text-muted">No source references attached to this item.</div>',
+            '<div style="font-size:12px;color:#94A3B8;">No source references attached to this item.</div>',
             unsafe_allow_html=True,
         )
         return
 
     for src in items:
-        name = src.get("name", src.get("drawing_name", "Unknown")) if isinstance(src, dict) else str(src)
-        page_ref = src.get("page", src.get("sheet", "")) if isinstance(src, dict) else ""
-        s3_path = src.get("s3_path", "") if isinstance(src, dict) else ""
+        if isinstance(src, dict):
+            name = src.get("drawing_name", "Unknown")
+            title = src.get("drawing_title", "")
+            page_ref = src.get("page", "")
+            snippet = src.get("source_snippet", "")
+            src_type = src.get("source_type", "drawing")
+        else:
+            name = str(src)
+            title = ""
+            page_ref = ""
+            snippet = ""
+            src_type = "drawing"
+
+        icon = "📐" if src_type == "drawing" else ("🔀" if src_type == "cross-reference" else "📄")
 
         st.markdown(
-            f'<div class="ref-card">'
-            f'<div class="ref-card-name">📄 {name}</div>'
-            f'{"<div class=ref-card-meta>Sheet: " + page_ref + "</div>" if page_ref else ""}'
-            f'{"<div class=ref-card-meta style=word-break:break-all;>" + s3_path + "</div>" if s3_path else ""}'
+            f'<div style="background:#fff;border:1px solid #E2E8F0;border-radius:8px;'
+            f'padding:10px 12px;margin-bottom:6px;">'
+            f'<div style="font-size:12px;font-weight:600;color:#0F172A;">{icon} {name}</div>'
+            f'{"<div style=font-size:11px;color:#64748B;>" + title + "</div>" if title else ""}'
+            f'{"<div style=font-size:10px;color:#94A3B8;>Page: " + str(page_ref) + "</div>" if page_ref else ""}'
+            f'{"<div style=font-size:10px;color:#64748B;margin-top:4px;font-style:italic;>" + snippet[:200] + "</div>" if snippet else ""}'
             f"</div>",
             unsafe_allow_html=True,
         )

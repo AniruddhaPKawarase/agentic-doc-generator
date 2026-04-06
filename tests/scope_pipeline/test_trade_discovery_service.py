@@ -180,16 +180,18 @@ async def test_discover_trades_cached_pre_populated():
 
 @pytest.mark.asyncio
 async def test_discover_trades_empty():
-    """API returns empty list → service returns [] without error."""
+    """API returns empty list and probe returns nothing → service returns [] without error."""
     api = _make_api_client([])
+    # Add probe_trade_exists mock that returns 0 for all trades
+    api.probe_trade_exists = AsyncMock(return_value=0)
     cache = _make_cache()
     svc = TradeDiscoveryService(api, cache)
 
     result = await svc.discover_trades(project_id=5555)
 
     assert result == []
-    # Empty result is still cached (avoids repeated API calls for empty projects)
-    assert "sg_trades:5555" in cache._store
+    # Empty result is NOT cached (allows re-probe on next call)
+    assert "sg_trades:5555" not in cache._store
 
 
 @pytest.mark.asyncio
@@ -197,6 +199,7 @@ async def test_discover_trades_api_failure_returns_empty():
     """If the API raises an exception, service returns [] gracefully."""
     api = MagicMock()
     api.get_summary_by_trade = AsyncMock(side_effect=Exception("connection refused"))
+    api.probe_trade_exists = AsyncMock(return_value=0)
 
     cache = _make_cache()
     svc = TradeDiscoveryService(api, cache)
