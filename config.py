@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     api_page_size: int = 500
     max_pagination_pages: int = 200
     max_summary_records: int = 0
-    parallel_fetch_concurrency: int = 10
+    parallel_fetch_concurrency: int = 30
 
     # ── Redis ─────────────────────────────────────────────
     redis_url: str = "redis://localhost:6379/0"
@@ -99,6 +99,11 @@ class Settings(BaseSettings):
     scope_gap_extraction_max_tokens: int = 8000
     scope_gap_classification_max_tokens: int = 4000
     scope_gap_quality_max_tokens: int = 4000
+
+    # ── Rate Limiting & Concurrency ──────────────────────
+    rate_limit_generate: str = "10/minute"
+    rate_limit_read: str = "60/minute"
+    max_concurrent_requests: int = 50
 
     class Config:
         env_file = ".env"

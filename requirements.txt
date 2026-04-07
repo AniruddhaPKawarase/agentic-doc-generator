@@ -17,3 +17,5 @@ pyodbc>=5.0.1
 boto3>=1.34.0
 reportlab>=4.0
 sse-starlette>=1.6.0
+structlog>=24.1.0
+slowapi>=0.1.9

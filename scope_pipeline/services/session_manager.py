@@ -202,6 +202,30 @@ class ScopeGapSessionManager:
         except Exception:
             logger.warning("L3 write failed for %s", key, exc_info=True)
 
+    def backup_session_to_s3(self, session_id: str, session_data: dict) -> bool:
+        """Persist session snapshot to S3 for disaster recovery."""
+        try:
+            import tempfile
+
+            from s3_utils.operations import upload_file
+            from config import get_settings
+
+            settings = get_settings()
+            if settings.storage_backend != "s3":
+                return False
+
+            s3_key = f"{settings.s3_agent_prefix}/sessions/{session_id}.json"
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+                json.dump(session_data, f, default=str)
+                tmp_path = f.name
+
+            upload_file(tmp_path, s3_key)
+            logger.info("Session %s backed up to S3: %s", session_id, s3_key)
+            return True
+        except Exception:
+            logger.warning("Failed to backup session %s to S3", session_id, exc_info=True)
+            return False
+
     @staticmethod
     def _s3_path(key: str, user_id: Optional[str]) -> str:
         uid = user_id or "anonymous"

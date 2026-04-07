@@ -210,3 +210,4 @@ class HealthResponse(BaseModel):
     status: str = "ok"
     redis: str = "unknown"
     openai: str = "unknown"
+    version: str = ""

@@ -49,6 +49,7 @@ from routers.chat import router as chat_router
 from routers.documents import router as documents_router
 from routers.projects import router as projects_router
 from scope_pipeline.routers.scope_gap import router as scope_gap_router
+from scope_pipeline.routers.status import router as status_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -56,6 +57,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 settings = get_settings()
+__version__ = "2.1.0"
 
 
 @asynccontextmanager
@@ -247,10 +249,18 @@ async def lifespan(app: FastAPI):
     yield  # App runs here
 
     # ── Shutdown ──────────────────────────────────────────────────
-    logger.info("Shutting down...")
+    logger.info("Shutting down — closing connections")
     await sql_service.close()
     await api_client.disconnect()
     await cache.disconnect()
+    # Cancel any running background tasks
+    import asyncio
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    if tasks:
+        logger.info("Cancelling %d background tasks", len(tasks))
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
     logger.info("Shutdown complete")
 
 
@@ -262,7 +272,7 @@ app = FastAPI(
         "AI-powered construction document generation from MongoDB drawing data. "
         "Supports scopes, exhibits, reports, takeoffs, and specifications."
     ),
-    version="1.0.0",
+    version=__version__,
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
@@ -271,17 +281,32 @@ app = FastAPI(
 # CORS — allow the frontend origin
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "https://ai.ifieldsmart.com,https://ai5.ifieldsmart.com,http://localhost:3000,http://localhost:8501").split(","),
+    allow_origins=[
+        "https://ai5.ifieldsmart.com",
+        "https://ai.ifieldsmart.com",
+        "http://localhost:8501",
+        "http://54.197.189.113:8501",
+    ],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from middleware.request_id import RequestIdMiddleware
+app.add_middleware(RequestIdMiddleware)
+
+from middleware.auth import BearerAuthMiddleware
+app.add_middleware(BearerAuthMiddleware)
+
+from middleware.rate_limit import setup_rate_limiting
+setup_rate_limiting(app)
 
 # ── Routers ───────────────────────────────────────────────────────
 app.include_router(chat_router)
 app.include_router(documents_router)
 app.include_router(projects_router)
 app.include_router(scope_gap_router)
+app.include_router(status_router)
 
 from scope_pipeline.routers.project_endpoints import router as project_router
 from scope_pipeline.routers.highlight_endpoints import router as highlight_router
@@ -316,6 +341,7 @@ async def health_check():
         status="ok",
         redis=redis_status,
         openai=openai_status,
+        version=__version__,
     )
 
 

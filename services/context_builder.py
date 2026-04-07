@@ -41,7 +41,7 @@ settings = get_settings()
 
 # Adaptive note-truncation levels tried in order until context fits budget.
 # Values are max characters per individual note.
-_ADAPTIVE_NOTE_LEVELS = [300, 200, 150, 100]
+_ADAPTIVE_NOTE_LEVELS = [300, 200, 150, 100, 75]
 
 
 class ContextBuilder:

@@ -5,6 +5,7 @@ When STORAGE_BACKEND=s3: serves documents via S3 presigned URLs (no local files)
 When STORAGE_BACKEND=local: serves from local docs_dir (original behavior).
 """
 import asyncio
+import re
 import sys
 from pathlib import Path
 
@@ -12,6 +13,13 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, RedirectResponse
 
 from config import get_settings
+
+_FILE_ID_PATTERN = re.compile(r'^[a-f0-9-]+$')
+
+def _validate_file_id(file_id: str) -> str:
+    if not _FILE_ID_PATTERN.match(file_id):
+        raise HTTPException(status_code=400, detail="Invalid file_id format")
+    return file_id
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 settings = get_settings()
@@ -84,6 +92,7 @@ def _find_local(file_id: str) -> Path | None:
 @router.get("/{file_id}/download")
 async def download_document(file_id: str):
     """Download a generated Word document."""
+    _validate_file_id(file_id)
 
     # --- S3 MODE: presigned URL redirect ---
     if settings.storage_backend == "s3":
@@ -91,12 +100,16 @@ async def download_document(file_id: str):
         if s3_key:
             url = await asyncio.to_thread(_s3_presigned_url, s3_key)
             if url:
+                from services.audit_logger import log_audit_event
+                log_audit_event("document_download", file_id=file_id)
                 return RedirectResponse(url=url)
         raise HTTPException(status_code=404, detail="Document not found in S3")
 
     # --- LOCAL MODE ---
     local = _find_local(file_id)
     if local and local.exists():
+        from services.audit_logger import log_audit_event
+        log_audit_event("document_download", file_id=file_id)
         return FileResponse(
             path=str(local),
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -110,6 +123,7 @@ async def download_document(file_id: str):
 @router.get("/{file_id}/info")
 async def document_info(file_id: str):
     """Return metadata for a generated document."""
+    _validate_file_id(file_id)
 
     # --- S3 MODE ---
     if settings.storage_backend == "s3":

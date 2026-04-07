@@ -65,8 +65,8 @@ class APIClient:
             timeout=httpx.Timeout(settings.api_timeout_seconds, connect=5.0),
             # Allow enough connections for parallel page fetching
             limits=httpx.Limits(
-                max_connections=settings.parallel_fetch_concurrency + 5,
-                max_keepalive_connections=settings.parallel_fetch_concurrency,
+                max_connections=100,
+                max_keepalive_connections=20,
             ),
             follow_redirects=True,
         )

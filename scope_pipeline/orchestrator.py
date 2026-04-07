@@ -294,6 +294,17 @@ class ScopeGapPipeline:
             pipeline_stats=pipeline_stats,
         )
 
+        try:
+            from services.audit_logger import log_audit_event
+            log_audit_event(
+                "pipeline_complete",
+                project_id=request.project_id,
+                trade=request.trade,
+                metadata={"items_count": len(final_items), "tokens_used": total_tokens},
+            )
+        except Exception:
+            pass
+
         # Step 9: Update session
         run_record = PipelineRun(
             started_at=datetime.now(timezone.utc),
