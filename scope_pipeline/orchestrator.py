@@ -60,6 +60,7 @@ class ScopeGapPipeline:
         data_fetcher: Any,
         session_manager: Any,
         config: Optional[PipelineConfig] = None,
+        sql_service: Any = None,
     ) -> None:
         self._extraction = extraction_agent
         self._classification = classification_agent
@@ -71,6 +72,7 @@ class ScopeGapPipeline:
         self._data_fetcher = data_fetcher
         self._session_mgr = session_manager
         self._config = config
+        self._sql = sql_service
 
     # ------------------------------------------------------------------
     # Public API
@@ -107,6 +109,20 @@ class ScopeGapPipeline:
         all_records: list[dict[str, Any]] = fetch_result["records"]
         source_drawings: set[str] = set(fetch_result["drawing_names"])
         source_csi: set[str] = set(fetch_result["csi_codes"])
+
+        # Step 2b: Fetch project display info from SQL
+        project_display: dict[str, str] = {
+            "name": project_name or f"Project {request.project_id}",
+            "city": "",
+        }
+        if self._sql:
+            try:
+                project_display = await self._sql.get_project_display_info(request.project_id)
+            except Exception as exc:
+                logger.warning("SQL project info failed: %s", exc)
+
+        # Step 2c: Extract S3 URL mapping from fetched records
+        drawing_s3_urls: dict[str, str] = fetch_result.get("drawing_s3_urls", {})
 
         # Accumulate across attempts
         all_items: list[ScopeItem] = []
@@ -219,6 +235,7 @@ class ScopeGapPipeline:
                 source_csi=source_csi,
                 attempt=attempt,
                 threshold=threshold,
+                trade=request.trade,
             )
             completeness_report = completeness_result.data
             total_tokens += completeness_result.tokens_used
@@ -242,6 +259,65 @@ class ScopeGapPipeline:
         )
         final_items = [i for i in all_items if i.id not in hallucinated_ids]
         final_classified = [i for i in all_classified if i.id not in hallucinated_ids]
+
+        # Step 4b: Force-extract missing drawings (guaranteed coverage sweep)
+        if completeness_report and completeness_report.missing_drawings:
+            force_missing = list(completeness_report.missing_drawings)
+            logger.info(
+                "Force-extracting %d missing drawings: %s",
+                len(force_missing), force_missing,
+            )
+            for drawing_name in force_missing:
+                drawing_records = [
+                    r for r in all_records
+                    if (r.get("drawingName") or r.get("drawing_name", "")) == drawing_name
+                ]
+                if not drawing_records:
+                    continue
+
+                force_input = {
+                    "drawing_records": [
+                        {
+                            "drawing_name": r.get("drawingName") or r.get("drawing_name", ""),
+                            "drawing_title": r.get("drawingTitle") or r.get("drawing_title", ""),
+                            "text": r.get("text", ""),
+                        }
+                        for r in drawing_records
+                    ],
+                    "trade": request.trade,
+                    "drawing_list": sorted(source_drawings),
+                }
+
+                try:
+                    force_result = await self._extraction.run(
+                        force_input, emitter, attempt=attempt_count + 1,
+                    )
+                    force_items = force_result.data
+                    total_tokens += force_result.tokens_used
+
+                    for item in force_items:
+                        key = (item.drawing_name, item.text)
+                        if key not in seen_keys:
+                            seen_keys.add(key)
+                            final_items.append(item)
+
+                    force_class = await self._classification.run(
+                        force_items, emitter, trade=request.trade,
+                    )
+                    total_tokens += force_class.tokens_used
+                    classified_keys = {
+                        (c.drawing_name, c.text) for c in final_classified
+                    }
+                    for item in force_class.data:
+                        key = (item.drawing_name, item.text)
+                        if key not in classified_keys:
+                            classified_keys.add(key)
+                            final_classified.append(item)
+
+                except Exception as exc:
+                    logger.warning(
+                        "Force-extract failed for drawing %s: %s", drawing_name, exc,
+                    )
 
         # Step 5: Run quality agent
         final_merged = MergedResults(
@@ -273,9 +349,11 @@ class ScopeGapPipeline:
             completeness=completeness_report,
             quality=quality_report,
             project_id=request.project_id,
-            project_name=project_name,
+            project_name=project_display.get("name", project_name),
+            project_location=project_display.get("city", ""),
             trade=request.trade,
             stats=pipeline_stats,
+            drawing_s3_urls=drawing_s3_urls,
         )
 
         # Step 7 (already built): pipeline stats
@@ -283,7 +361,7 @@ class ScopeGapPipeline:
         # Step 8: Build ScopeGapResult
         result = ScopeGapResult(
             project_id=request.project_id,
-            project_name=project_name,
+            project_name=project_display.get("name", project_name),
             trade=request.trade,
             items=final_classified,
             ambiguities=ambiguities,

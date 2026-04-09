@@ -58,9 +58,10 @@ class TradeDiscoveryService:
         """
         Return unique trades and record counts for a project.
 
-        Strategy:
-          1. Try summaryByTrade with empty trade (returns all records on some APIs).
-          2. If empty, fall back to probing known trades via byTrade endpoint.
+        Strategy (in priority order):
+          1. uniqueTrades API — single fast call, returns all trade names.
+          2. summaryByTrade with empty trade (works on some API deployments).
+          3. Probe known trades via byTrade page 1 (slowest fallback).
 
         Args:
             project_id: Integer project identifier.
@@ -82,20 +83,37 @@ class TradeDiscoveryService:
                 )
                 return deserialized
 
-        # -- Strategy 1: empty-trade fetch (works on some API deployments) --
-        records = await _fetch_all_records(self._api, project_id, set_id)
-
         trade_counts: dict[str, int] = {}
-        for rec in records:
-            trade_names = _extract_trade_names(rec)
-            for name in trade_names:
-                trade_counts[name] = trade_counts.get(name, 0) + 1
 
-        # -- Strategy 2: probe known trades if Strategy 1 returned nothing --
+        # -- Strategy 1: uniqueTrades API (fast, single call) ---------------
+        if set_id is None:
+            try:
+                unique_trades = await self._api.get_unique_trades(project_id)
+                if unique_trades:
+                    # uniqueTrades doesn't return counts — use 1 as placeholder
+                    trade_counts = {t: 1 for t in unique_trades}
+                    logger.info(
+                        "discover_trades: uniqueTrades API returned %d trades for project=%s",
+                        len(trade_counts), project_id,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "discover_trades: uniqueTrades failed for project=%s: %s",
+                    project_id, exc,
+                )
+
+        # -- Strategy 2: empty-trade fetch ----------------------------------
+        if not trade_counts:
+            records = await _fetch_all_records(self._api, project_id, set_id)
+            for rec in records:
+                trade_names = _extract_trade_names(rec)
+                for name in trade_names:
+                    trade_counts[name] = trade_counts.get(name, 0) + 1
+
+        # -- Strategy 3: probe known trades (slowest fallback) --------------
         if not trade_counts:
             logger.info(
-                "discover_trades: empty-trade fetch returned 0 records for "
-                "project=%s, falling back to trade probing...",
+                "discover_trades: falling back to trade probing for project=%s",
                 project_id,
             )
             trade_counts = await self._probe_known_trades(project_id, set_id)

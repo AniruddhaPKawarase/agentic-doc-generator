@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     summary_by_trade_and_set_path: str = "/api/drawingText/summaryByTradeAndSet"
     by_trade_path: str = "/api/drawingText/byTrade"
     by_trade_and_set_path: str = "/api/drawingText/byTradeAndSet"
+    unique_trades_path: str = "/api/drawingText/uniqueTrades"
     api_auth_token: str = ""
     api_timeout_seconds: int = 30
 

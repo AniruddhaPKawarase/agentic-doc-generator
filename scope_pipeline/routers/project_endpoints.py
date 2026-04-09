@@ -12,6 +12,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, List, Optional
 
@@ -63,6 +64,10 @@ def _get_scope_data_fetcher(request: Request):
 
 def _get_project_orchestrator(request: Request):
     return request.app.state.project_orchestrator
+
+
+def _get_api_client(request: Request):
+    return request.app.state.api_client
 
 
 # ---------------------------------------------------------------------------
@@ -164,9 +169,15 @@ async def get_drawings(
     request: Request,
     set_id: Optional[int] = Query(None),
 ) -> dict[str, Any]:
-    """Return a categorized drawing tree grouped by discipline."""
+    """Return a categorized drawing tree grouped by discipline.
+
+    Strategy: try empty-trade fetch first (returns all records on some APIs).
+    If that returns nothing, fall back to fetching per discovered trade and
+    merging — mirrors the fallback in TradeDiscoveryService.
+    """
     scope_data_fetcher = _get_scope_data_fetcher(request)
     drawing_index = _get_drawing_index(request)
+    trade_discovery = _get_trade_discovery(request)
 
     set_ids = [set_id] if set_id is not None else None
 
@@ -181,6 +192,44 @@ async def get_drawings(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     records: list[dict] = fetch_result.get("records", [])
+    seen_ids: set[str] = {r.get("_id", "") for r in records if r.get("_id")}
+
+    # Always supplement with per-trade page1 fetches.  The empty-trade path
+    # may return a partial dataset (e.g. 621 of 2707 records), and some API
+    # deployments return 0 records for trade="".  Page 1 per trade adds
+    # ~50 records × N trades, giving broad drawing-name coverage without
+    # exhaustively paginating all records.
+    try:
+        api_client = _get_api_client(request)
+        raw_trades = await trade_discovery.discover_trades(
+            project_id=project_id, set_id=set_id,
+        )
+        trade_names = [t.get("trade", "") for t in raw_trades if t.get("trade")]
+
+        if trade_names:
+            logger.info(
+                "get_drawings: supplementing with page-1-per-trade for %d trades, project=%s",
+                len(trade_names), project_id,
+            )
+            batches = await asyncio.gather(*[
+                api_client.fetch_page1(project_id, t, set_id)
+                for t in trade_names
+            ])
+
+            for batch in batches:
+                for rec in batch:
+                    rec_id = rec.get("_id", "")
+                    if rec_id and rec_id not in seen_ids:
+                        records.append(rec)
+                        seen_ids.add(rec_id)
+                    elif not rec_id:
+                        records.append(rec)
+    except Exception as exc:
+        logger.warning(
+            "get_drawings: per-trade supplement failed for project=%s: %s",
+            project_id, exc,
+        )
+
     categories = drawing_index.build_categorized_tree(records)
 
     total_drawings = 0

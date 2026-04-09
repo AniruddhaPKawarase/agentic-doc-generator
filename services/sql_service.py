@@ -107,6 +107,48 @@ class SQLService:
 
         return display_name, error_reason
 
+    async def get_project_display_info(
+        self, project_id: int
+    ) -> dict[str, str]:
+        """Return project name and city for document headers.
+
+        Returns:
+            {"name": "SINGH RESIDENCE", "city": "Nashville"}
+            Falls back to {"name": "Project {id}", "city": ""} on failure.
+        """
+        if not self._available or not settings.sql_server_host:
+            return {"name": f"Project {project_id}", "city": ""}
+
+        cache_key = f"project_info:{project_id}"
+        cached = await self._cache.get(cache_key)
+        if cached is not None and isinstance(cached, dict):
+            return cached
+
+        info = await asyncio.to_thread(self._query_project_info_sync, project_id)
+        if info["name"] != f"Project {project_id}":
+            await self._cache.set(cache_key, info, ttl=settings.cache_ttl_project_name)
+        return info
+
+    def _query_project_info_sync(self, project_id: int) -> dict[str, str]:
+        """Sync query for project name + city. Called via to_thread."""
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT ProjectName, City FROM Projects WHERE ProjectID = ?",
+                (project_id,),
+            )
+            row = cursor.fetchone()
+            if row and row[0]:
+                name = str(row[0]).strip()
+                city = str(row[1]).strip() if row[1] else ""
+                return {"name": name, "city": city}
+            return {"name": f"Project {project_id}", "city": ""}
+        except Exception as exc:
+            logger.warning("get_project_display_info failed for %s: %s", project_id, exc)
+            self._conn = None
+            return {"name": f"Project {project_id}", "city": ""}
+
     async def close(self) -> None:
         """Close SQL connection on application shutdown."""
         if self._conn is not None:

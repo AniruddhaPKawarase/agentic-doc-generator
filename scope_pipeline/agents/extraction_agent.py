@@ -57,6 +57,33 @@ OUTPUT: Respond with ONLY a JSON array. No markdown fences. No explanation.
 [{{"text":"Contractor shall furnish and install 200A panel board, 42-circuit, surface mounted, as indicated on Drawing E-103","drawing_name":"E-103","page":3,"source_snippet":"verbatim 5-15 words","confidence":0.95,"csi_hint":"26 24 16","drawing_refs":["E-103"]}}]"""
 
 
+def _group_records_by_drawing(records: list[dict]) -> dict[str, list[dict]]:
+    """Group extraction records by drawing_name."""
+    grouped: dict[str, list[dict]] = {}
+    for rec in records:
+        name = rec.get("drawing_name", "Unknown")
+        grouped.setdefault(name, []).append(rec)
+    return grouped
+
+
+def _create_batches(
+    grouped: dict[str, list[dict]],
+    max_records_per_batch: int = 30,
+) -> list[list[dict]]:
+    """Create batches from grouped records, keeping drawings together."""
+    batches: list[list[dict]] = []
+    current_batch: list[dict] = []
+    for drawing_name in sorted(grouped.keys()):
+        drawing_records = grouped[drawing_name]
+        if current_batch and len(current_batch) + len(drawing_records) > max_records_per_batch:
+            batches.append(current_batch)
+            current_batch = []
+        current_batch.extend(drawing_records)
+    if current_batch:
+        batches.append(current_batch)
+    return batches
+
+
 class ExtractionAgent(BaseAgent):
     name = "extraction"
     requires_llm = True
@@ -77,18 +104,8 @@ class ExtractionAgent(BaseAgent):
         trade = input_data.get("trade", "")
         drawing_list = input_data.get("drawing_list", [])
 
-        context_blocks = []
-        for rec in records:
-            name = rec.get("drawing_name", "Unknown")
-            title = rec.get("drawing_title", "")
-            text = rec.get("text", "")
-            header = f"=== DRAWING: {name}"
-            if title:
-                header += f" ({title})"
-            header += " ==="
-            context_blocks.append(f"{header}\n{text}")
-
-        context = "\n\n".join(context_blocks)
+        grouped = _group_records_by_drawing(records)
+        batches = _create_batches(grouped)
 
         system = SYSTEM_PROMPT.format(
             trade=trade,
@@ -97,23 +114,55 @@ class ExtractionAgent(BaseAgent):
 
         emitter.emit("agent_progress", {
             "agent": self.name,
-            "message": f"Extracting scope from {len(records)} drawing records for {trade}...",
+            "message": (
+                f"Extracting scope from {len(records)} drawing records "
+                f"in {len(batches)} batch(es) for {trade}..."
+            ),
         })
 
-        response = await self._client.chat.completions.create(
-            model=self._model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": f"Extract all {trade} scope items:\n\n{context}"},
-            ],
-            max_tokens=self._max_tokens,
-            temperature=0.3,
-        )
+        all_items: list[ScopeItem] = []
+        total_tokens = 0
 
-        raw = response.choices[0].message.content or ""
-        if hasattr(response, "usage") and response.usage:
-            self._last_tokens_used = response.usage.total_tokens
-        return self._parse_response(raw)
+        for batch_idx, batch in enumerate(batches, start=1):
+            context_blocks = []
+            for rec in batch:
+                name = rec.get("drawing_name", "Unknown")
+                title = rec.get("drawing_title", "")
+                text = rec.get("text", "")
+                header = f"=== DRAWING: {name}"
+                if title:
+                    header += f" ({title})"
+                header += " ==="
+                context_blocks.append(f"{header}\n{text}")
+
+            context = "\n\n".join(context_blocks)
+
+            emitter.emit("agent_progress", {
+                "agent": self.name,
+                "message": (
+                    f"Batch {batch_idx}/{len(batches)}: "
+                    f"processing {len(batch)} records..."
+                ),
+            })
+
+            response = await self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": f"Extract all {trade} scope items:\n\n{context}"},
+                ],
+                max_tokens=self._max_tokens,
+                temperature=0.3,
+            )
+
+            raw = response.choices[0].message.content or ""
+            if hasattr(response, "usage") and response.usage:
+                total_tokens += response.usage.total_tokens
+
+            all_items.extend(self._parse_response(raw))
+
+        self._last_tokens_used = total_tokens
+        return all_items
 
     def _parse_response(self, raw: str) -> list[ScopeItem]:
         cleaned = raw.strip()

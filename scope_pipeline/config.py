@@ -69,7 +69,7 @@ def get_pipeline_config() -> PipelineConfig:
         extraction_max_tokens=int(os.getenv("SCOPE_GAP_EXTRACTION_MAX_TOKENS", "8000")),
         classification_max_tokens=int(os.getenv("SCOPE_GAP_CLASSIFICATION_MAX_TOKENS", "4000")),
         quality_max_tokens=int(os.getenv("SCOPE_GAP_QUALITY_MAX_TOKENS", "4000")),
-        max_attempts=int(os.getenv("SCOPE_GAP_MAX_ATTEMPTS", "3")),
+        max_attempts=int(os.getenv("SCOPE_GAP_MAX_ATTEMPTS", "5")),
         completeness_threshold=float(os.getenv("SCOPE_GAP_COMPLETENESS_THRESHOLD", "95.0")),
         record_threshold=int(os.getenv("SCOPE_GAP_RECORD_THRESHOLD", "2000")),
         max_concurrent_jobs=int(os.getenv("SCOPE_GAP_MAX_CONCURRENT_JOBS", "3")),

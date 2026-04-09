@@ -65,8 +65,8 @@ class APIClient:
             timeout=httpx.Timeout(settings.api_timeout_seconds, connect=5.0),
             # Allow enough connections for parallel page fetching
             limits=httpx.Limits(
-                max_connections=100,
-                max_keepalive_connections=20,
+                max_connections=settings.parallel_fetch_concurrency + 5,
+                max_keepalive_connections=settings.parallel_fetch_concurrency,
             ),
             follow_redirects=True,
         )
@@ -191,8 +191,117 @@ class APIClient:
         return merged, set_names
 
     async def fetch_project_metadata(self, project_id: int) -> dict[str, Any]:
-        """Returns a lightweight metadata stub — trade detection is keyword-only."""
-        return {"trades": [], "csi_divisions": []}
+        """Fetch actual trade list via the uniqueTrades API.
+
+        Falls back to empty list if the endpoint fails — intent agent will
+        then rely on keyword matching only.
+        """
+        trades = await self.get_unique_trades(project_id)
+        return {"trades": trades, "csi_divisions": []}
+
+    async def get_unique_trades(
+        self,
+        project_id: int,
+        bypass_cache: bool = False,
+    ) -> list[str]:
+        """Fetch unique trade names for a project via the uniqueTrades endpoint.
+
+        GET /api/drawingText/uniqueTrades?projectId={id}
+        Response: {"success": true, "data": {"list": ["Electrical", ...], "count": N}}
+
+        Returns a sorted list of non-empty trade name strings.
+        Cached for 1 hour.
+        """
+        cache_key = CacheService.api_key("unique_trades", project_id)
+        if not bypass_cache:
+            cached = await self._cache.get(cache_key)
+            if cached is not None:
+                logger.debug("Cache hit unique_trades project=%s (%d trades)", project_id, len(cached))
+                return cached
+
+        if not self._http:
+            logger.error("HTTP client not initialized — call connect() first.")
+            return []
+
+        path = settings.unique_trades_path
+        if not path.startswith("/"):
+            path = f"/{path}"
+
+        try:
+            resp = await self._http.get(path, params={"projectId": project_id})
+            resp.raise_for_status()
+            body = resp.json()
+            raw_list = body.get("data", {}).get("list", [])
+            trades = sorted({t.strip() for t in raw_list if t and isinstance(t, str) and t.strip()})
+
+            logger.info("uniqueTrades project=%s → %d trades", project_id, len(trades))
+            await self._cache.set(cache_key, trades, ttl=3600)
+            return trades
+        except Exception as exc:
+            logger.warning("get_unique_trades failed project=%s: %s", project_id, exc)
+            return []
+
+    async def fetch_page1(
+        self,
+        project_id: int,
+        trade: str,
+        set_id: Optional[Union[int, str]] = None,
+    ) -> list[dict[str, Any]]:
+        """Fetch ONLY page 1 of records for a trade — lightweight, fast.
+
+        Used by the drawings endpoint to discover drawing names without
+        exhaustively paginating thousands of records.
+
+        Strategy: try summaryByTrade first (has drawingName if available),
+        then fall back to byTrade (has pdfName, drawingId — richer for
+        projects where summaryByTrade lacks drawing fields).
+
+        Returns list of record dicts (may be empty).
+        """
+        if not self._http:
+            return []
+
+        # Try summaryByTrade first (preferred — contains drawingName/setTrade)
+        summary_path = (
+            settings.summary_by_trade_and_set_path if set_id
+            else settings.summary_by_trade_path
+        )
+        if not summary_path.startswith("/"):
+            summary_path = f"/{summary_path}"
+        params: dict[str, Any] = {"projectId": project_id, "trade": trade}
+        if set_id is not None:
+            params["setId"] = set_id
+
+        try:
+            resp = await self._http.get(summary_path, params=params)
+            resp.raise_for_status()
+            records = self._extract_list(resp.json())
+            # Check if records have drawingName (some projects don't)
+            if records and records[0].get("drawingName"):
+                return records
+        except Exception:
+            pass
+
+        # Fallback: byTrade endpoint (has pdfName, drawingId, trade)
+        raw_path = (
+            settings.by_trade_and_set_path if set_id
+            else settings.by_trade_path
+        )
+        if not raw_path.startswith("/"):
+            raw_path = f"/{raw_path}"
+
+        try:
+            resp = await self._http.get(raw_path, params=params)
+            resp.raise_for_status()
+            records = self._extract_list(resp.json())
+            # Normalize: inject setTrade from trade field for downstream
+            for rec in records:
+                if not rec.get("setTrade") and rec.get("trade"):
+                    rec["setTrade"] = rec["trade"]
+            return records
+        except Exception as exc:
+            logger.debug("fetch_page1 failed project=%s trade=%s: %s", project_id, trade, exc)
+            return []
 
     async def probe_trade_exists(
         self,

@@ -103,10 +103,25 @@ class DrawingIndexService:
         seen: dict[tuple[str, str], set[str]] = {}
 
         for rec in records:
-            drawing_name: str = (rec.get("drawingName") or "").strip()
-            drawing_title: str = (rec.get("drawingTitle") or "").strip()
-            set_trade: str = (rec.get("setTrade") or "").strip()
+            drawing_name: str = (
+                rec.get("drawingName")
+                or rec.get("pdfName")
+                or ""
+            ).strip()
+            drawing_title: str = (
+                rec.get("drawingTitle")
+                or rec.get("drawingName")
+                or ""
+            ).strip()
+            set_trade: str = (
+                rec.get("setTrade")
+                or rec.get("trade")
+                or ""
+            ).strip()
             source_type: str = (rec.get("source_type") or "drawing").strip().lower()
+
+            if not drawing_name:
+                continue
 
             discipline = derive_discipline(drawing_name, set_trade)
 

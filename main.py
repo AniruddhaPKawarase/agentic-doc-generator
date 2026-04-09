@@ -186,6 +186,7 @@ async def lifespan(app: FastAPI):
         data_fetcher=scope_data_fetcher,
         session_manager=scope_session_mgr,
         config=pcfg,
+        sql_service=sql_service,
     )
     app.state.scope_pipeline = scope_pipe
     app.state.scope_job_manager = JobManager(
@@ -215,7 +216,19 @@ async def lifespan(app: FastAPI):
     trade_discovery_svc = TradeDiscoveryService(api_client=api_client, cache_service=cache)
     drawing_index_svc = DrawingIndexService()
     export_svc = ExportService(docs_dir=pcfg.docs_dir)
-    highlight_svc = HighlightService(s3_ops=None, cache_service=cache, s3_prefix=pcfg.highlight_s3_prefix)
+    from scope_pipeline.services.async_s3_ops import AsyncS3Ops
+    s3_bucket_name = ""
+    s3_agent_prefix = ""
+    if settings.storage_backend == "s3":
+        try:
+            from s3_utils.config import get_s3_config as _get_s3_cfg
+            _s3c = _get_s3_cfg()
+            s3_bucket_name = _s3c.bucket_name
+            s3_agent_prefix = _s3c.agent_prefix
+        except Exception:
+            pass
+    async_s3 = AsyncS3Ops(bucket_name=s3_bucket_name, prefix=s3_agent_prefix)
+    highlight_svc = HighlightService(s3_ops=async_s3, cache_service=cache, s3_prefix=pcfg.highlight_s3_prefix)
     webhook_handler = WebhookHandler(
         secret=pcfg.webhook_secret,
         cache_service=cache,
@@ -281,12 +294,7 @@ app = FastAPI(
 # CORS — allow the frontend origin
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://ai5.ifieldsmart.com",
-        "https://ai.ifieldsmart.com",
-        "http://localhost:8501",
-        "http://54.197.189.113:8501",
-    ],
+    allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -295,11 +303,13 @@ app.add_middleware(
 from middleware.request_id import RequestIdMiddleware
 app.add_middleware(RequestIdMiddleware)
 
-from middleware.auth import BearerAuthMiddleware
-app.add_middleware(BearerAuthMiddleware)
+# Auth middleware removed — will be added later
+# from middleware.auth import BearerAuthMiddleware
+# app.add_middleware(BearerAuthMiddleware)
 
-from middleware.rate_limit import setup_rate_limiting
-setup_rate_limiting(app)
+# Rate limiting / concurrency cap removed — caused async event loop issues
+# from middleware.rate_limit import setup_rate_limiting
+# setup_rate_limiting(app)
 
 # ── Routers ───────────────────────────────────────────────────────
 app.include_router(chat_router)

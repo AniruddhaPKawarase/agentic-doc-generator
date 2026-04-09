@@ -41,8 +41,8 @@ class DataFetcher:
             all_records: list[dict] = []
             seen_ids: set[str] = set()
             for sid in set_ids:
-                batch = await self._api.get_summary_by_trade_and_set(
-                    project_id, trade, sid,
+                batch, _ = await self._api.get_summary_by_trade_and_set(
+                    project_id, trade, [sid],
                 )
                 for rec in batch:
                     rec_id = rec.get("_id", "")
@@ -67,6 +67,15 @@ class DataFetcher:
                 if csi:
                     csi_codes.add(csi.strip())
 
+        # Extract S3 path mapping: drawing_name -> S3 path
+        drawing_s3_urls: dict[str, str] = {}
+        for rec in records:
+            dn = rec.get("drawingName", "") or rec.get("drawing_name", "") or rec.get("pdfName", "")
+            s3_path = rec.get("s3BucketPath", "")
+            pdf_name = rec.get("pdfName", "")
+            if dn and s3_path and pdf_name and dn not in drawing_s3_urls:
+                drawing_s3_urls[dn] = f"{s3_path}/{pdf_name}"
+
         logger.info(
             "Fetched %d records for project=%d trade=%s (%d drawings, %d CSI codes)",
             len(records), project_id, trade,
@@ -77,4 +86,5 @@ class DataFetcher:
             "records": records,
             "drawing_names": drawing_names,
             "csi_codes": csi_codes,
+            "drawing_s3_urls": drawing_s3_urls,
         }
