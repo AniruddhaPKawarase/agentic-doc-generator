@@ -51,6 +51,40 @@ def render_chat_messages(messages: list[dict]):
                     unsafe_allow_html=True,
                 )
 
+                # Warnings/fallback alert banner
+                api_warnings = msg.get("warnings", [])
+                api_version = msg.get("api_version", "")
+
+                if api_warnings:
+                    for w in api_warnings:
+                        st.warning(w)
+                if api_version.startswith("summary"):
+                    st.error(
+                        "Using fallback API -- source references may be unavailable. "
+                        "Contact support if this persists."
+                    )
+
+                # Raw API data expander
+                raw_data = msg.get("raw_records")
+                if raw_data:
+                    with st.expander("Raw API Data", expanded=False):
+                        import pandas as pd
+                        all_cols = list(raw_data[0].keys()) if raw_data else []
+                        visible_cols = st.multiselect(
+                            "Visible columns",
+                            all_cols,
+                            default=all_cols,
+                            key=f"cols_{msg.get('time', '')}_{id(msg)}",
+                        )
+                        if visible_cols:
+                            df = pd.DataFrame(raw_data)[visible_cols]
+                            st.dataframe(df, use_container_width=True, height=400)
+                            csv = df.to_csv(index=False)
+                            st.download_button(
+                                "Download CSV", csv, "raw_data.csv", "text/csv",
+                                key=f"csv_{msg.get('time', '')}_{id(msg)}",
+                            )
+
 
 def _send_chat(pid: int, text: str):
     """Send a chat message and append both user and agent messages to session."""

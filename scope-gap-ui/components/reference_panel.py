@@ -121,3 +121,22 @@ def _render_reference_panel_inline():
             f"</div>",
             unsafe_allow_html=True,
         )
+
+
+def render_source_references(source_refs: dict):
+    """Render clickable source reference links."""
+    if not source_refs:
+        st.info("Source references not available.")
+        return
+
+    with st.expander("Source References", expanded=True):
+        for name, ref in sorted(source_refs.items()):
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.markdown(f"**{name}** -- {ref.get('drawing_title', '')}")
+            with col2:
+                s3_url = ref.get("s3_url")
+                if s3_url:
+                    st.markdown(f"[Open PDF]({s3_url})")
+                else:
+                    st.caption("No PDF link")
