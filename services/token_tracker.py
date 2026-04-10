@@ -40,14 +40,15 @@ class PipelineTokenLog:
         input_tokens: int = 0,
         output_tokens: int = 0,
         cost_usd: float = 0.0,
+        elapsed_ms: int = None,
     ) -> None:
-        elapsed_ms = int((time.perf_counter() - self._t0) * 1000)
+        computed_ms = int((time.perf_counter() - self._t0) * 1000)
         self.steps[step_name] = {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": input_tokens + output_tokens,
             "cost_usd": round(cost_usd, 6),
-            "elapsed_ms": elapsed_ms,
+            "elapsed_ms": elapsed_ms if elapsed_ms is not None else computed_ms,
         }
 
     def summary(self) -> dict[str, Any]:

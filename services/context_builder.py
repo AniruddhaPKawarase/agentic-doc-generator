@@ -78,18 +78,35 @@ class ContextBuilder:
         stats: dict[str, Any] = {}
 
         set_names: list[str] = []
-        if set_ids:
-            records, set_names = await self._api.get_summary_by_trade_and_set(
-                project_id, trade, set_ids,
-            )
-            stats["set_ids"] = set_ids
-            stats["set_names"] = set_names
+        api_metadata: dict[str, Any] = {}
+        if settings.use_new_api:
+            # v4: Use richer byTrade/byTradeAndSet endpoints (with fallback)
+            if set_ids:
+                records, set_names, api_metadata = await self._api.get_by_trade_and_set(
+                    project_id, trade, set_ids,
+                )
+                stats["set_ids"] = set_ids
+                stats["set_names"] = set_names
+            else:
+                records, api_metadata = await self._api.get_by_trade(
+                    project_id, trade,
+                )
         else:
-            records = await self._api.get_summary_by_trade(project_id, trade)
+            # Legacy: summaryByTrade endpoints
+            if set_ids:
+                records, set_names = await self._api.get_summary_by_trade_and_set(
+                    project_id, trade, set_ids,
+                )
+                stats["set_ids"] = set_ids
+                stats["set_names"] = set_names
+                api_metadata = {"endpoint_used": "summaryByTradeAndSet", "fallback": False}
+            else:
+                records = await self._api.get_summary_by_trade(project_id, trade)
+                api_metadata = {"endpoint_used": "summaryByTrade", "fallback": False}
         stats["total_records"] = len(records)
         # Expose raw records for source index building downstream
         stats["raw_records"] = records
-        stats["api_metadata"] = {"endpoint_used": "summaryByTradeAndSet" if set_ids else "summaryByTrade"}
+        stats["api_metadata"] = api_metadata
 
         if not records:
             context = (
