@@ -1,0 +1,223 @@
+{
+  "test_run": "initial",
+  "timestamp": "2026-04-09T07:10:00Z",
+  "base_url": "http://54.197.189.113:8003",
+  "summary": {
+    "total_apis_tested": 18,
+    "passed": 12,
+    "failed": 4,
+    "warnings": 2
+  },
+  "bugs_found": [
+    {
+      "id": "BUG-001",
+      "severity": "CRITICAL",
+      "endpoint": "GET /api/scope-gap/projects/{project_id}/drawings",
+      "issue": "Returns empty categories for ALL projects (7276, 7298, 7212)",
+      "root_cause": "data_fetcher.fetch_records() calls external API with trade='' which returns 0 records. The external iFieldSmart API requires a non-empty trade parameter. TradeDiscoveryService has a fallback (probes 43 known trades), but DataFetcher does not.",
+      "file": "scope_pipeline/services/data_fetcher.py:54 + scope_pipeline/routers/project_endpoints.py:174",
+      "fix": "Add fallback in drawings endpoint: if trade='' returns empty, discover trades via TradeDiscoveryService, then fetch records per trade in parallel and merge."
+    },
+    {
+      "id": "BUG-002",
+      "severity": "HIGH",
+      "endpoint": "POST /api/scope-gap/highlights",
+      "issue": "'NoneType' object has no attribute 'put'",
+      "root_cause": "Highlight store/cache service not properly initialized on app.state. Redis is in-memory-only mode and highlight store may not be wired up.",
+      "file": "scope_pipeline/routers/highlight_endpoints.py + main.py (app.state initialization)",
+      "fix": "Investigate highlight store initialization in main.py startup"
+    },
+    {
+      "id": "BUG-003",
+      "severity": "MEDIUM",
+      "endpoint": "POST /api/chat",
+      "issue": "Chat pipeline returns 'no drawing notes available', intent.trade='unknown', project_name shows 'SQL not configured'",
+      "root_cause": "Intent classifier cannot map generic queries to a trade. Project metadata lookup fails (SQL not configured). This is likely an environment/config issue on the sandbox server.",
+      "file": "agents/ (intent agent) + config.py (SQL settings)",
+      "fix": "Environment configuration issue — SQL/project name lookup not set up on sandbox"
+    },
+    {
+      "id": "BUG-004",
+      "severity": "HIGH",
+      "endpoint": "data_fetcher.fetch_records() when set_ids provided",
+      "issue": "Passes single int to get_summary_by_trade_and_set() which expects list[int]. Also does not unpack tuple return (records, set_names).",
+      "root_cause": "data_fetcher.py line 44-46: passes `sid` (int) instead of `[sid]` (list). Line 47: iterates `batch` as list but it's a tuple of (records, set_names).",
+      "file": "scope_pipeline/services/data_fetcher.py:39-52",
+      "fix": "Wrap sid in list: `[sid]`. Unpack tuple: `records, _ = await ...`"
+    }
+  ],
+  "results": {
+    "system": {
+      "GET /": {
+        "status": "PASS",
+        "http_code": 200,
+        "response": {"message": "Construction Intelligence Agent API", "docs": "/docs"}
+      },
+      "GET /health": {
+        "status": "PASS",
+        "http_code": 200,
+        "response": {"status": "ok", "redis": "in-memory-only", "openai": "configured", "version": "2.1.0"},
+        "note": "Redis is in-memory-only — not connected to external Redis"
+      }
+    },
+    "scope_gap_projects": {
+      "GET /api/scope-gap/projects/7276/drawings": {
+        "status": "FAIL",
+        "http_code": 200,
+        "response": {"project_id": 7276, "total_drawings": 0, "total_specs": 0, "categories": {}},
+        "bug": "BUG-001"
+      },
+      "GET /api/scope-gap/projects/7298/drawings": {
+        "status": "FAIL",
+        "http_code": 200,
+        "response": {"project_id": 7298, "total_drawings": 0, "total_specs": 0, "categories": {}},
+        "bug": "BUG-001"
+      },
+      "GET /api/scope-gap/projects/7212/drawings": {
+        "status": "FAIL",
+        "http_code": 200,
+        "response": {"project_id": 7212, "total_drawings": 0, "total_specs": 0, "categories": {}},
+        "bug": "BUG-001"
+      },
+      "GET /api/scope-gap/projects/7276/trades": {
+        "status": "PASS",
+        "http_code": 200,
+        "trade_count": 15,
+        "total_records": 1117,
+        "trades": ["Carpentry","Concrete","Doors","Drywall","Electrical","Glazing","HVAC","Insulation","Masonry","Painting","Plumbing","Roofing","Sitework","Structural","Waterproofing"]
+      },
+      "GET /api/scope-gap/projects/7298/trades": {
+        "status": "PASS",
+        "http_code": 200,
+        "trade_count": 11,
+        "total_records": 2707,
+        "trades": ["Concrete","Drywall","Electrical","Fire Protection","Framing","Glazing","HVAC","Painting","Plumbing","Roofing","Structural"]
+      },
+      "GET /api/scope-gap/projects/7212/trades": {
+        "status": "PASS",
+        "http_code": 200,
+        "trade_count": 20,
+        "total_records": 38994,
+        "trades": ["Carpentry","Concrete","Doors","Drywall","Electrical","Fire Protection","Framing","Glazing","HVAC","Insulation","Masonry","Mechanical","Painting","Plumbing","Roofing","Sitework","Steel","Structural","Waterproofing","Windows"]
+      },
+      "GET /api/scope-gap/projects/7276/trade-colors": {
+        "status": "PASS",
+        "http_code": 200,
+        "colors_count": 15
+      },
+      "GET /api/scope-gap/projects/7276/status": {
+        "status": "PASS",
+        "http_code": 200,
+        "response": {"project_id": 7276, "session_id": null, "overall_progress": 0, "total_items": 0, "trades": []}
+      }
+    },
+    "scope_gap_pipeline": {
+      "POST /api/scope-gap/generate (trade=Doors)": {
+        "status": "PASS",
+        "http_code": 200,
+        "items_count": 6,
+        "ambiguities_count": 0,
+        "gotchas_count": 6,
+        "completeness_pct": 83.3,
+        "quality_accuracy": 0.95,
+        "documents_generated": ["word_path", "pdf_path", "csv_path", "json_path"],
+        "pipeline_ms": 71095,
+        "attempts": 3,
+        "tokens_used": 12808,
+        "cost_usd": 0.025616
+      }
+    },
+    "scope_gap_system": {
+      "GET /api/scope-gap/status": {
+        "status": "PASS",
+        "http_code": 200,
+        "response": {"status": "ok", "uptime_seconds": 155996, "redis_connected": false, "s3_connected": true}
+      },
+      "GET /api/scope-gap/metrics": {
+        "status": "PASS",
+        "http_code": 200,
+        "response": {"status": "ok", "active_jobs": 0}
+      }
+    },
+    "sessions_and_jobs": {
+      "GET /api/scope-gap/sessions": {
+        "status": "PASS",
+        "http_code": 200,
+        "response": [],
+        "note": "Empty — no scope gap sessions exist yet"
+      },
+      "GET /api/scope-gap/jobs": {
+        "status": "PASS",
+        "http_code": 200,
+        "response": [],
+        "note": "Empty — no background jobs exist"
+      },
+      "GET /api/scope-gap/sessions/nonexistent (404)": {
+        "status": "PASS",
+        "http_code": 404,
+        "response": {"detail": "Session nonexistent_session not found"}
+      },
+      "GET /api/scope-gap/jobs/nonexistent/status (404)": {
+        "status": "PASS",
+        "http_code": 404,
+        "response": {"detail": "Job nonexistent_job not found"}
+      }
+    },
+    "chat_pipeline": {
+      "POST /api/chat": {
+        "status": "WARNING",
+        "http_code": 200,
+        "session_id": "5f31a620-ab94-402f-aee1-bf8cfb4a2c07",
+        "intent_trade": "unknown",
+        "groundedness_score": 0.4,
+        "pipeline_ms": 10069,
+        "tokens_used": 1405,
+        "cost_usd": 0.000361,
+        "document_generated": true,
+        "bug": "BUG-003",
+        "note": "Trade detection failed — returned 'unknown'. Project name shows 'SQL not configured'. Answer was generic."
+      }
+    },
+    "documents": {
+      "GET /api/documents/{file_id}/info": {
+        "status": "PASS",
+        "http_code": 200,
+        "file_id": "feb1d9df-4986-422d-88bd-bb7808f926a9",
+        "storage": "s3",
+        "size_bytes": 37764
+      },
+      "GET /api/documents/{file_id}/download": {
+        "status": "PASS",
+        "http_code": 307,
+        "note": "Redirects to S3 presigned URL"
+      },
+      "GET /api/documents/nonexistent/download (404)": {
+        "status": "PASS",
+        "http_code": 404,
+        "response": {"detail": "Document not found or expired"}
+      }
+    },
+    "highlights": {
+      "POST /api/scope-gap/highlights (create)": {
+        "status": "FAIL",
+        "http_code": 500,
+        "response": {"detail": "'NoneType' object has no attribute 'put'"},
+        "bug": "BUG-002"
+      },
+      "GET /api/scope-gap/highlights (list)": {
+        "status": "PASS",
+        "http_code": 200,
+        "response": [],
+        "note": "Empty — no highlights exist (create is broken)"
+      }
+    },
+    "project_context": {
+      "GET /api/projects/7276/context": {
+        "status": "WARNING",
+        "http_code": 200,
+        "response": {"project_id": 7276, "trades": [], "csi_divisions": [], "total_text_items": 0, "cached": false},
+        "note": "Returns empty trades/CSI — metadata fetch not working"
+      }
+    }
+  }
+}

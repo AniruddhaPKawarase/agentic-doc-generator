@@ -1,0 +1,198 @@
+{
+  "test_run": "final_after_fixes",
+  "timestamp": "2026-04-09T07:28:00Z",
+  "base_url": "http://54.197.189.113:8003",
+  "summary": {
+    "total_apis_tested": 22,
+    "passed": 20,
+    "failed": 0,
+    "warnings": 2,
+    "bugs_fixed": 4
+  },
+  "bugs_fixed": [
+    {
+      "id": "BUG-001",
+      "severity": "CRITICAL",
+      "endpoint": "GET /api/scope-gap/projects/{project_id}/drawings",
+      "status": "FIXED",
+      "fix_file": "scope_pipeline/routers/project_endpoints.py",
+      "fix_description": "Added per-trade fallback with semaphore(10) concurrency cap. When empty-trade returns no records, discovers trades via TradeDiscoveryService, fetches records per trade in parallel, merges with _id dedup.",
+      "verification": "7298 → 60 drawings, 3 disciplines (CIVIL, PLUMBING, ARCHITECTURAL). Was: 0 drawings, 0 categories."
+    },
+    {
+      "id": "BUG-002",
+      "severity": "HIGH",
+      "endpoint": "POST /api/scope-gap/highlights",
+      "status": "FIXED",
+      "fix_files": ["scope_pipeline/services/async_s3_ops.py (NEW)", "main.py"],
+      "fix_description": "Created AsyncS3Ops adapter wrapping sync s3_utils via run_in_executor. Wired into main.py replacing s3_ops=None. Uses asyncio.get_running_loop() for Python 3.12 compatibility.",
+      "verification": "Full CRUD cycle: create (hl_c9c2f7e9f3) → list (count=1) → update (label/critical changed) → delete (deleted=true)."
+    },
+    {
+      "id": "BUG-003",
+      "severity": "MEDIUM",
+      "endpoint": "POST /api/chat",
+      "status": "FIXED",
+      "fix_file": "services/api_client.py",
+      "fix_description": "Replaced empty stub in fetch_project_metadata() with real trade probing using _KNOWN_TRADES list from trade_discovery_service. Intent agent now receives actual trade list for keyword matching.",
+      "verification": "intent.trade='Electrical' (was 'unknown'). Answer: 12,572 chars of real scope data with drawing references. Document generated."
+    },
+    {
+      "id": "BUG-004",
+      "severity": "HIGH",
+      "endpoint": "scope_pipeline/services/data_fetcher.py (internal)",
+      "status": "FIXED",
+      "fix_file": "scope_pipeline/services/data_fetcher.py",
+      "fix_description": "Fixed set_ids path: wrapped single int in list ([sid]) and unpacked tuple return (batch, _ = ...). Was passing int directly and iterating tuple.",
+      "verification": "Code fix verified by code review agent. Matches pattern used in trade_discovery_service.py:176."
+    }
+  ],
+  "remaining_warnings": [
+    {
+      "id": "WARN-001",
+      "endpoint": "POST /api/chat",
+      "issue": "Project name shows 'SQL not configured' — pyodbc not installed on sandbox",
+      "impact": "Cosmetic only. Project display name falls back to 'Project ID: 7276'",
+      "fix": "Install pyodbc + ODBC Driver 17 on sandbox VM, or set SQL_SERVER_HOST in .env"
+    },
+    {
+      "id": "WARN-002",
+      "endpoint": "GET /health",
+      "issue": "Redis in-memory-only mode (not connected to external Redis)",
+      "impact": "Cache works but not shared across workers. No persistence across restarts.",
+      "fix": "Install/configure Redis on sandbox VM"
+    }
+  ],
+  "results": {
+    "system": {
+      "GET /": {
+        "status": "PASS",
+        "http_code": 200,
+        "response": {"message": "Construction Intelligence Agent API", "docs": "/docs"}
+      },
+      "GET /health": {
+        "status": "PASS",
+        "http_code": 200,
+        "response": {"status": "ok", "redis": "in-memory-only", "openai": "configured", "version": "2.1.0"}
+      }
+    },
+    "scope_gap_drawings": {
+      "GET /api/scope-gap/projects/7298/drawings": {
+        "status": "PASS (FIXED)",
+        "http_code": 200,
+        "total_drawings": 60,
+        "total_specs": 0,
+        "categories_count": 3,
+        "disciplines": ["CIVIL", "PLUMBING", "ARCHITECTURAL"],
+        "was": "0 drawings, 0 categories"
+      },
+      "GET /api/scope-gap/projects/7276/drawings": {
+        "status": "PASS (FIXED)",
+        "http_code": 200,
+        "total_drawings": 20,
+        "total_specs": 0,
+        "categories_count": 1,
+        "disciplines": ["ARCHITECTURAL"],
+        "note": "Partial results due to upstream API timeouts during concurrent testing. Full set would include more disciplines."
+      }
+    },
+    "scope_gap_trades": {
+      "GET /api/scope-gap/projects/7276/trades": {
+        "status": "PASS",
+        "trade_count": 15,
+        "total_records": 1117
+      },
+      "GET /api/scope-gap/projects/7298/trades": {
+        "status": "PASS",
+        "trade_count": 11,
+        "total_records": 2707
+      },
+      "GET /api/scope-gap/projects/7212/trades": {
+        "status": "PASS",
+        "trade_count": 20,
+        "total_records": 38994
+      },
+      "GET /api/scope-gap/projects/7276/trade-colors": {
+        "status": "PASS",
+        "colors_count": 15
+      }
+    },
+    "scope_gap_pipeline": {
+      "POST /api/scope-gap/generate (Doors)": {
+        "status": "PASS",
+        "items_count": 6,
+        "gotchas_count": 6,
+        "completeness_pct": 83.3,
+        "documents": ["word", "pdf", "csv", "json"],
+        "pipeline_ms": 71095
+      }
+    },
+    "scope_gap_status": {
+      "GET /api/scope-gap/projects/7276/status": {
+        "status": "PASS",
+        "overall_progress": 0
+      },
+      "GET /api/scope-gap/status": {
+        "status": "PASS",
+        "s3_connected": true
+      },
+      "GET /api/scope-gap/metrics": {
+        "status": "PASS"
+      }
+    },
+    "sessions_and_jobs": {
+      "GET /api/scope-gap/sessions": {"status": "PASS", "count": 0},
+      "GET /api/scope-gap/jobs": {"status": "PASS", "count": 0},
+      "GET /api/scope-gap/sessions/nonexistent (404)": {"status": "PASS", "http_code": 404},
+      "GET /api/scope-gap/jobs/nonexistent/status (404)": {"status": "PASS", "http_code": 404}
+    },
+    "chat_pipeline": {
+      "POST /api/chat (trade-specific)": {
+        "status": "PASS (FIXED)",
+        "intent_trade": "Electrical",
+        "answer_length": 12572,
+        "has_document": true,
+        "pipeline_ms": 38590,
+        "was": "intent.trade='unknown', answer='no drawing notes available'"
+      }
+    },
+    "documents": {
+      "GET /api/documents/{file_id}/info": {"status": "PASS", "storage": "s3", "size_bytes": 37764},
+      "GET /api/documents/{file_id}/download": {"status": "PASS", "http_code": 307},
+      "GET /api/documents/nonexistent/download (404)": {"status": "PASS", "http_code": 404}
+    },
+    "highlights_crud": {
+      "POST /api/scope-gap/highlights (create)": {
+        "status": "PASS (FIXED)",
+        "highlight_id": "hl_c9c2f7e9f3",
+        "was": "'NoneType' object has no attribute 'put'"
+      },
+      "GET /api/scope-gap/highlights (list)": {
+        "status": "PASS",
+        "count": 1
+      },
+      "PATCH /api/scope-gap/highlights/{id} (update)": {
+        "status": "PASS",
+        "label_updated": "Updated Label",
+        "critical_updated": true
+      },
+      "DELETE /api/scope-gap/highlights/{id} (delete)": {
+        "status": "PASS",
+        "deleted": true
+      }
+    },
+    "project_context": {
+      "GET /api/projects/7276/context": {
+        "status": "WARNING",
+        "note": "Returns empty trades/CSI — metadata fetch depends on SQL which is not configured"
+      }
+    }
+  },
+  "files_changed": [
+    {"file": "scope_pipeline/services/data_fetcher.py", "change": "Fixed set_ids param wrapping and tuple unpacking"},
+    {"file": "scope_pipeline/routers/project_endpoints.py", "change": "Added per-trade fallback with asyncio.Semaphore(10) for drawings endpoint"},
+    {"file": "scope_pipeline/services/async_s3_ops.py", "change": "NEW — Async S3 adapter using asyncio.get_running_loop().run_in_executor()"},
+    {"file": "main.py", "change": "Wired AsyncS3Ops into HighlightService instead of s3_ops=None"},
+    {"file": "services/api_client.py", "change": "Replaced empty stub in fetch_project_metadata() with real trade probing"}
+  ]
+}

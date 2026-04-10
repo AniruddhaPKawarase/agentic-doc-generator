@@ -83,7 +83,13 @@ async def test_extraction_agent_handles_markdown_fenced_json():
     agent._client = mock_client
 
     result = await agent.run(
-        {"drawing_records": [], "trade": "Electrical", "drawing_list": []},
+        {
+            "drawing_records": [
+                {"drawing_name": "E-103", "text": "200A panel board"},
+            ],
+            "trade": "Electrical",
+            "drawing_list": ["E-103"],
+        },
         emitter,
     )
     assert len(result.data) == 2

@@ -43,6 +43,9 @@ desktop.ini
 # Generated documents (user-specific output)
 generated_docs/
 
+# Archive (restructured ancillary files)
+_archive/
+
 # Claude Code internal
 CLAUDE.md
 claude_code_config.json

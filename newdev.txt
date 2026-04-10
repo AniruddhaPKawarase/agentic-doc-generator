@@ -1,0 +1,57 @@
+Use the graph created for this project. /using-superpowers /using-superpowers /test-driven-development /agent-development /subagent-driven-development /systematic-debugging /superpowers:write-plan /superpowers:execute-plan /dispatching-parallel-agents. Consider the agent: @PROD_SETUP/construction-intelligence-agent/ , need to restructure our output using this new api
+1) use this api for retrieving data from mongo db: https://mongo.ifieldsmart.com/api/drawingText/byTradeAndSet?projectId=7292&trade=Civil&setId=4720
+here is the raw api response: 
+
+"data": {
+        "list": [
+            {
+                "_id": "69a700bd12179a5f1c8263d5",
+                "projectId": 7292,
+                "setId": 4720,
+                "tradeId": 10,
+                "drawingId": 318845,
+                "drawingName": "A102",
+                "drawingTitle": "ARCHITECTURAL SITE PLAN - NEW VET HOSPITAL",
+                "s3BucketPath": "ifieldsmart/acsveterinarianhospital2502202613322528/Drawings/pdf2502202613361561",
+                "pdfName": "2502202613395178A102ARCHITECTURALSITEPLANNEWVETHOSPITAL1-1",
+                "text": "MATCH EXISTING  SIDEWALK. RE;  CIVIL",
+                "x": 3743,
+                "y": 738,
+                "width": 144,
+                "height": 69,
+                "csi_division": [
+                    "03 - Concrete",
+                    "31 - Earthwork"
+                ],
+                "trades": [
+                    "Concrete",
+                    "Civil"
+                ]
+            },
+  
+
+After generating the response document or exhibit, these should be available in the raw api response. Make sure raw response should be display on Ui only not in the document. Each and every current functionality and flow should be working as it is same. This new api is only giving more data to our agent to generate or answer the scope question more efficiently. for example the new paramaters such as "drawingName", "drawingTitle", "drawingId", "s3BucketPath", "pdfName","y","width", "height", we need to use these paramaters values in those apis so that we can define our sources, highlight the source information into the pdf and another applications and use cases That's why we will use only this new api data to make our agent better. Architecture wise this agent is working correct.
+Need to add following parameters, check this functionality is already created or not:
+1) The output document should contain the project name. 
+2) Also For retrieving the project name, these should be a sql db connection where we can extract the Project name based on project ID, need to use it to add project name in the exported document. 
+3) Use the s3 bucket path and pdf name to open the reference documents. 
+Once these changes has been developed and tested, then these features should be available and disply onn UI also, for that we already create our streamlit UI, test these changes with the UI and save the results locally and once all the tests have been passed modify the API document as well here is the patH: C:\Users\ANIRUDDHA ASUS\Downloads\projects\VCS\VCS\PROD_SETUP\construction-intelligence-agent\docs\STREAMLIT_API_FLOW.md and reflect all these new changes in backend and UI.
+Now once the roadmap has been created then check it one by one very carefully on the following perspective:
+1) scaling
+2) optimization
+3) performance metric
+4) Request handling
+5) Vulnerability
+6) SDLC parameters
+7) Compliance
+8) Disaster recovery and backup
+9) Support & Helpdesk Framework 
+10) System Maintenance
+11) Network & Security Requirements
+12) Resource Management: Efficiency through Automation 
+and all the other parameters which are necessary. Now Review complete infrastructure, understand the each and every aspects of architecture. Perform the rigorous testing, use combination of agents to perform small small assignments, use each and every testing method on agent to find the bugs errors issues and Do not stop until all the issues has be resolve. Use your full potential and parallel agents all the skills. after completing all the above steps then get the final confirmation with the user to start the project phase wise mention construct in that way, if user say yes then start the development. Then transfer all these changes in sandbox vm in maintaining the same folder structure like in the local. 
+here are the vm details : 2) ip: 54.197.189.113
+pem key path: "C:\Users\ANIRUDDHA ASUS\Downloads\projects\VCS\ai_assistant_sandbox.pem"
+here is the folder path : /home/ubuntu/chatbot/aniruddha/vcsai
+Once the agent has been deployed, push all these agent changes to the GitHub here is the repo path: "C:\Users\ANIRUDDHA ASUS\Downloads\projects\VCS\agentic-ai-platform". And update these changes in my excel sheet with the same format in the sheet named "Xtra-work-april": "C:\Users\ANIRUDDHA ASUS\Downloads\projects\VCS\Attendance_sheets\Attendance_Aniruddha.xlsx".
+

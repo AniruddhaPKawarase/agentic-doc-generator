@@ -14,10 +14,11 @@ from fastapi.responses import FileResponse, RedirectResponse
 
 from config import get_settings
 
-_FILE_ID_PATTERN = re.compile(r'^[a-f0-9-]+$')
+_FILE_ID_PATTERN = re.compile(r'^[a-zA-Z0-9_-]+$')
 
 def _validate_file_id(file_id: str) -> str:
-    if not _FILE_ID_PATTERN.match(file_id):
+    """Validate file_id — accepts UUIDs, filenames (alphanumeric + underscore + dash)."""
+    if not _FILE_ID_PATTERN.match(file_id) or len(file_id) > 200:
         raise HTTPException(status_code=400, detail="Invalid file_id format")
     return file_id
 
@@ -77,14 +78,29 @@ def _s3_object_size(s3_key: str) -> int | None:
 # ── Local helpers ─────────────────────────────────────────────────────────────
 
 def _find_local(file_id: str) -> Path | None:
-    """Find a local file matching the UUID prefix."""
+    """Find a local file matching the file_id.
+
+    Supports both UUID-based names (old chat pipeline) and
+    timestamp-based names (scope gap pipeline: 7298_Doors_20260407_114028).
+    Searches all supported extensions: .docx, .pdf, .csv, .json
+    """
     docs_dir = Path(settings.docs_dir)
     if not docs_dir.exists():
         return None
-    matches = list(docs_dir.glob(f"*_{file_id[:8]}.docx"))
-    if not matches:
-        matches = [f for f in docs_dir.glob("*.docx") if file_id[:8] in f.name]
-    return matches[0] if matches else None
+
+    # Strategy 1: exact filename match (with any extension)
+    for ext in (".docx", ".pdf", ".csv", ".json"):
+        exact = docs_dir / f"{file_id}{ext}"
+        if exact.exists():
+            return exact
+
+    # Strategy 2: UUID prefix match (legacy chat pipeline docs)
+    for ext in (".docx", ".pdf", ".csv", ".json"):
+        matches = [f for f in docs_dir.glob(f"*{ext}") if file_id[:8] in f.stem]
+        if matches:
+            return matches[0]
+
+    return None
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -94,7 +110,7 @@ async def download_document(file_id: str):
     """Download a generated Word document."""
     _validate_file_id(file_id)
 
-    # --- S3 MODE: presigned URL redirect ---
+    # --- S3 MODE: try S3 first, fall through to local ---
     if settings.storage_backend == "s3":
         s3_key = await asyncio.to_thread(_find_s3_key, file_id)
         if s3_key:
@@ -103,16 +119,23 @@ async def download_document(file_id: str):
                 from services.audit_logger import log_audit_event
                 log_audit_event("document_download", file_id=file_id)
                 return RedirectResponse(url=url)
-        raise HTTPException(status_code=404, detail="Document not found in S3")
+        # S3 lookup failed — fall through to local (scope gap docs saved locally)
 
-    # --- LOCAL MODE ---
+    # --- LOCAL FALLBACK ---
     local = _find_local(file_id)
     if local and local.exists():
         from services.audit_logger import log_audit_event
         log_audit_event("document_download", file_id=file_id)
+        mime_map = {
+            ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".pdf": "application/pdf",
+            ".csv": "text/csv",
+            ".json": "application/json",
+        }
+        mime = mime_map.get(local.suffix.lower(), "application/octet-stream")
         return FileResponse(
             path=str(local),
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            media_type=mime,
             filename=local.name,
             headers={"Content-Disposition": f'attachment; filename="{local.name}"'},
         )

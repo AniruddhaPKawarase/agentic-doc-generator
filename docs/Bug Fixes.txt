@@ -1,0 +1,103 @@
+Q1. For reference documents display — which behavior do you want?
+
+A) Auto-populate right panel with all source drawings when scope gap analysis completes
+B) Inline source citations within the response text (e.g., [Source: E-103, Page 2])
+C) Both — inline citations AND auto-populated right panel
+D) Something else
+
+Answer: C) Both — inline citations AND auto-populated right panel
+
+
+Q2. For the Export to Doc button — which export formats should work?
+
+A) Word (.docx) only
+B) All four formats (Word, PDF, CSV, JSON)
+C) Word + PDF only
+
+Answer: B) All four formats (Word, PDF, CSV, JSON). Give me option to user which format he needs to export.
+
+Q3. Should the export download the file directly to the browser, or open a new tab with a download link?
+
+Answer: directly to the browser.
+
+Scaling & Performance
+Q4. What's the expected concurrent user load? (e.g., 5 users, 50 users, 500 users)
+
+Answer: 50 users
+
+Q5. What's the largest project size (in drawing records) you expect to handle? Currently the system handles ~11,000 records. Do you anticipate 50K?
+
+Answer: around 30k
+
+Q6. Are there any latency targets? (e.g., "scope gap analysis must complete within X minutes for Y records")
+
+Answer: no it should increase any way if data has been higher, so display a progress bar where use can know how much work is done.
+
+Architecture & Infrastructure
+Q7. Is the Streamlit UI (app.py) the only frontend being used in production, or is the React-based index.html / ifieldsmart-scope-ai.jsx also active?
+
+Answer: currently using streamlit only for demo and testing then we will replicate every streamlit functionality in a proper front end framework.
+
+Q8. Should the sandbox VM (54.197.189.113) mirror production exactly, or is it acceptable to have reduced resources (e.g., no Redis, local storage instead of S3)?
+
+Answer: Yes
+
+Q9. Is Redis currently running on the sandbox VM, or does it need to be set up?
+
+Answer: No, later we will set it up keep the option.
+
+Security & Compliance
+Q10. Are there any specific compliance standards this system must meet? (HIPAA, SOC 2, ISO 27001, or industry-specific construction compliance like AIA standards?)
+
+Answer: if its possible in this development phase then apply it, otherwise will set it up later.
+
+Q11. Is the API auth token (API_AUTH_TOKEN) rotated on a schedule, or static?
+
+Answer: rotate on a schedule
+
+Q12. Should the export documents include any watermarking or access control (e.g., "CONFIDENTIAL" stamps, user-based access)?
+
+Answer: No
+
+Disaster Recovery & Backup
+Q13. Is S3 versioning enabled on the agentic-ai-production bucket? If not, should we add it?
+
+Answer: You should add it
+
+Q14. What's the acceptable data loss window? (RPO — can you lose 1 hour, 1 day of generated documents?)
+
+Answer: as soon as the session ends, or save the backup in s3 and keep the records display on UI.
+
+Q15. Is there a backup strategy for Redis session data, or is session loss on restart acceptable?
+
+Answer: no, set it up for s3 for now then we will shift on Redis.
+
+Deployment & Operations
+Q16. For the sandbox VM deployment — should the agent auto-start via systemd, or is manual start acceptable for testing?
+Answer: agent should auto-start.
+
+Q17. Which GitHub repo should the changes be pushed to? Is it AniruddhaPKawarase/VCS or a different repo/branch?
+
+Answer: here is the repo path: "C:\Users\ANIRUDDHA ASUS\Downloads\projects\VCS\agentic-ai-platform"
+
+Q18. Should we create a new branch (e.g., fix/construction-agent-bugs) or push directly to main?
+
+Answer: no there is a sub repo named "agent-doc-generator"
+
+Support & Maintenance
+Q19. Do you want logging/monitoring improvements as part of this? (e.g., structured JSON logs, error alerting, request tracing)
+
+Answer: Yes
+
+Q20. Should we add health check endpoints specific to the scope gap pipeline (beyond the existing /health)?
+
+Answer: Yes
+
+UI Preferences
+Q21. The archived UI at _archive/scope-gap-ui/app.py is 2093 lines. Should we refactor it into smaller modules during this fix, or keep changes minimal (fix only the two bugs)?
+
+Answer: Yes refactor into smaller modules but keep it intact and make sure it should be sharable and executable in any environment, just to install the requirements and it should be execute because the apis we are using are form sandbox vm.
+
+Q22. Any branding/styling changes needed, or just functional fixes?
+
+Answer: Functional fixes are mandatory and from the UI part, keep the neutral colour pallete as background and dark colors for font, because fonts are unable to display right now in the uI
