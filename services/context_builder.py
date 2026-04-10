@@ -87,6 +87,9 @@ class ContextBuilder:
         else:
             records = await self._api.get_summary_by_trade(project_id, trade)
         stats["total_records"] = len(records)
+        # Expose raw records for source index building downstream
+        stats["raw_records"] = records
+        stats["api_metadata"] = {"endpoint_used": "summaryByTradeAndSet" if set_ids else "summaryByTrade"}
 
         if not records:
             context = (

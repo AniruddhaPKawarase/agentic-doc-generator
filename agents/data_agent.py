@@ -67,6 +67,15 @@ class DataAgent:
         )
 
         stats["trade"] = intent.trade
+
+        # Expose raw records and API metadata for source index building.
+        # ContextBuilder.build() now always populates these — provide safe
+        # defaults in case an older or patched version doesn't.
+        if "raw_records" not in stats:
+            stats["raw_records"] = []
+        if "api_metadata" not in stats:
+            stats["api_metadata"] = {}
+
         return context, stats
 
     async def get_project_metadata(self, project_id: int) -> dict:

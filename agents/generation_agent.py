@@ -137,6 +137,7 @@ class GenerationAgent:
         document_generator: DocumentGenerator,
         hallucination_guard: HallucinationGuard,
         sql_service: SQLService,
+        source_index_builder=None,
     ):
         self._intent = intent_agent
         self._data = data_agent
@@ -146,6 +147,7 @@ class GenerationAgent:
         self._docgen = document_generator
         self._guard = hallucination_guard
         self._sql = sql_service
+        self._source_index_builder = source_index_builder
         self._client = AsyncOpenAI(api_key=settings.openai_api_key) if settings.openai_api_key else None
 
     async def process(self, request: ChatRequest) -> ChatResponse:
@@ -222,6 +224,14 @@ class GenerationAgent:
                 "Context rebuilt for corrected trade=%s drawings=%d",
                 intent.trade, _ctx_stats.get("unique_drawings", 0),
             )
+
+        # Build source index from raw records returned by context builder
+        raw_records = _ctx_stats.get("raw_records", [])
+        api_metadata = _ctx_stats.get("api_metadata", {})
+        source_index: dict = {}
+        source_meta: dict = {}
+        if settings.source_ref_enabled and raw_records and self._source_index_builder:
+            source_index, source_meta = self._source_index_builder.build(raw_records)
 
         # -- Empty-result check for set_ids filter -------------------------
         set_names: list[str] = _ctx_stats.get("set_names", [])
@@ -326,6 +336,7 @@ class GenerationAgent:
             document_type=intent.document_type,
             set_ids=set_ids,
             set_names=set_names,
+            source_index=source_index if source_index else None,
         ) if request.generate_document else _noop_coro()
 
         followup_coro = self._generate_follow_up_questions(
@@ -352,8 +363,21 @@ class GenerationAgent:
         pipeline_ms = int((time.perf_counter() - t_start) * 1000)
         t["total"] = pipeline_ms
         pipeline_log.record_step("total_pipeline")
+        if source_meta:
+            pipeline_log.record_step(
+                "source_index_build",
+                elapsed_ms=source_meta.get("build_ms", 0),
+            )
 
         token_log_summary = pipeline_log.summary()
+
+        # Collect non-blocking warnings for response
+        warnings: list[str] = []
+        if api_metadata.get("fallback"):
+            warnings.append("Using fallback API endpoint -- source PDF links may be unavailable.")
+        missing_count = source_meta.get("drawings_missing", 0)
+        if missing_count > 0:
+            warnings.append(f"Source references unavailable for {missing_count} drawings.")
 
         response = ChatResponse(
             session_id=session.session_id,
@@ -371,6 +395,11 @@ class GenerationAgent:
             pipeline_ms=pipeline_ms,
             cached=False,
             token_log=token_log_summary,
+            source_references={
+                name: ref.to_dict() for name, ref in source_index.items()
+            } if source_index else {},
+            api_version=api_metadata.get("endpoint_used", ""),
+            warnings=warnings,
         )
 
         # Persist session + tokens + cache -- parallel
@@ -521,6 +550,14 @@ class GenerationAgent:
 
         cache_key = CacheService.query_key(request.project_id, intent.trade + set_ids_suffix, request.query)
 
+        # Build source index from raw records returned by context builder
+        stream_raw_records = _ctx_stats.get("raw_records", [])
+        stream_api_metadata = _ctx_stats.get("api_metadata", {})
+        stream_source_index: dict = {}
+        stream_source_meta: dict = {}
+        if settings.source_ref_enabled and stream_raw_records and self._source_index_builder:
+            stream_source_index, stream_source_meta = self._source_index_builder.build(stream_raw_records)
+
         # -- Empty-result check for set_ids filter (streaming) ----------------
         set_names_stream: list[str] = _ctx_stats.get("set_names", [])
         if set_ids and _ctx_stats.get("total_records", 0) == 0:
@@ -653,6 +690,7 @@ class GenerationAgent:
             document_type=intent.document_type,
             set_ids=set_ids,
             set_names=set_names_stream,
+            source_index=stream_source_index if stream_source_index else None,
         ) if request.generate_document else _noop_coro()
 
         followup_coro = self._generate_follow_up_questions(
@@ -678,7 +716,20 @@ class GenerationAgent:
 
         pipeline_ms = int((time.perf_counter() - t_start) * 1000)
         pipeline_log.record_step("total_pipeline")
+        if stream_source_meta:
+            pipeline_log.record_step(
+                "source_index_build",
+                elapsed_ms=stream_source_meta.get("build_ms", 0),
+            )
         token_log_summary = pipeline_log.summary()
+
+        # Collect non-blocking warnings for streaming response
+        stream_warnings: list[str] = []
+        if stream_api_metadata.get("fallback"):
+            stream_warnings.append("Using fallback API endpoint -- source PDF links may be unavailable.")
+        stream_missing_count = stream_source_meta.get("drawings_missing", 0)
+        if stream_missing_count > 0:
+            stream_warnings.append(f"Source references unavailable for {stream_missing_count} drawings.")
 
         response = ChatResponse(
             session_id=session.session_id,
@@ -696,6 +747,11 @@ class GenerationAgent:
             pipeline_ms=pipeline_ms,
             cached=False,
             token_log=token_log_summary,
+            source_references={
+                name: ref.to_dict() for name, ref in stream_source_index.items()
+            } if stream_source_index else {},
+            api_version=stream_api_metadata.get("endpoint_used", ""),
+            warnings=stream_warnings,
         )
 
         # Persist

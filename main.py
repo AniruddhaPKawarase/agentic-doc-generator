@@ -88,6 +88,11 @@ async def lifespan(app: FastAPI):
     # SQL service — project name lookup (v3)
     # Graceful: startup never fails even if SQL is unreachable or pyodbc is missing.
     sql_service = SQLService(cache=cache)
+
+    # Source index builder — extracts drawing references for document hyperlinks
+    from services.source_index import SourceIndexBuilder
+    source_index_builder = SourceIndexBuilder()
+
     if settings.sql_server_host:
         logger.info(
             "SQL project name service configured: host=%s db=%s",
@@ -110,6 +115,7 @@ async def lifespan(app: FastAPI):
         document_generator=document_generator,
         hallucination_guard=hallucination_guard,
         sql_service=sql_service,
+        source_index_builder=source_index_builder,
     )
 
     # ── Attach to app.state (dependency injection) ────────────────
@@ -118,6 +124,7 @@ async def lifespan(app: FastAPI):
     app.state.session_service = session_service
     app.state.token_tracker = token_tracker
     app.state.generation_agent = generation_agent
+    app.state.source_index_builder = source_index_builder
 
     # ── S3 connectivity check (diagnostic) ───────────────────────
     if settings.storage_backend == "s3":
@@ -347,11 +354,26 @@ async def health_check():
     """System health check."""
     redis_status = await app.state.cache.status()
     openai_status = "configured" if settings.openai_api_key else "not configured"
+
+    api_client = app.state.api_client
+    new_api_status = "disabled"
+    if settings.use_new_api:
+        try:
+            test_resp = await api_client._http.get(
+                f"{settings.api_base_url}{settings.by_trade_path}",
+                params={"projectId": 7292, "trade": "Civil", "skip": 0, "limit": 1},
+                timeout=5,
+            )
+            new_api_status = "ok" if test_resp.status_code == 200 else "degraded (using fallback)"
+        except Exception:
+            new_api_status = "degraded (using fallback)"
+
     return HealthResponse(
         status="ok",
         redis=redis_status,
         openai=openai_status,
         version=__version__,
+        new_api=new_api_status,
     )
 
 
