@@ -8,7 +8,7 @@ GET /api/projects/{project_id}/context
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.requests import Request
 
 from models.schemas import ProjectContextResponse
@@ -51,8 +51,8 @@ async def get_raw_data(
     project_id: int,
     trade: str,
     set_id: Optional[int] = None,
-    skip: int = 0,
-    limit: int = 500,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=500, ge=1, le=1000),
     request: Request = None,
 ) -> dict:
     """

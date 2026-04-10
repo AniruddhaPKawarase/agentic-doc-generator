@@ -269,7 +269,8 @@ class ExhibitDocumentGenerator:
             else:
                 p2.text = "N/A"
             if ref.x is not None and ref.y is not None:
-                row[3].text = f"({ref.x}, {ref.y}) {ref.width}x{ref.height}"
+                size = f" {ref.width}x{ref.height}" if ref.width is not None and ref.height is not None else ""
+                row[3].text = f"({ref.x}, {ref.y}){size}"
             else:
                 row[3].text = "\u2014"
         hyperlink_count = sum(1 for ref in source_index.values() if ref.s3_url)

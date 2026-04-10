@@ -64,12 +64,18 @@ class SourceIndexBuilder:
                 warnings.append(dn)
                 continue
 
+            safe_pdf = self._sanitize_pdf_name(pdf_name)
+            if not safe_pdf:
+                logger.warning("Invalid pdfName for drawing %s: %s", dn, pdf_name)
+                warnings.append(dn)
+                continue
+
             x, y, w, h = self._validate_coordinates(rec)
             index[dn] = SourceReference(
-                drawing_id=int(rec.get("drawingId", 0) or 0),
+                drawing_id=self._safe_drawing_id(rec.get("drawingId")),
                 drawing_name=dn,
                 drawing_title=rec.get("drawingTitle", ""),
-                s3_url=self._build_s3_url(s3_path, pdf_name),
+                s3_url=self._build_s3_url(s3_path, safe_pdf),
                 pdf_name=pdf_name,
                 x=x, y=y, width=w, height=h,
             )
@@ -90,12 +96,29 @@ class SourceIndexBuilder:
         }
         return index, metadata
 
+    @staticmethod
+    def _safe_drawing_id(val: Any) -> int:
+        """Extract drawingId as int. Returns 0 on non-numeric values."""
+        if val is None:
+            return 0
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            return 0
+
     def _sanitize_s3_path(self, raw_path: str) -> str | None:
-        if not raw_path or ".." in raw_path:
+        if not raw_path or ".." in raw_path or "\x00" in raw_path:
             return None
         if not any(raw_path.startswith(p) for p in _ALLOWED_S3_PREFIXES):
             return None
         return quote(raw_path, safe="/")
+
+    @staticmethod
+    def _sanitize_pdf_name(name: str) -> str | None:
+        """Validate and sanitize pdfName. Reject traversal and control chars."""
+        if not name or ".." in name or "\x00" in name or "/" in name or "\\" in name:
+            return None
+        return quote(name, safe="")
 
     def _build_s3_url(self, s3_path: str, pdf_name: str) -> str:
         pattern = settings.s3_pdf_url_pattern
@@ -133,13 +156,14 @@ class SourceIndexBuilder:
                 pdf_name = rec.get("pdfName", "")
                 if s3_path and pdf_name:
                     sanitized = self._sanitize_s3_path(s3_path)
-                    if sanitized:
+                    safe_pdf = self._sanitize_pdf_name(pdf_name)
+                    if sanitized and safe_pdf:
                         x, y, w, h = self._validate_coordinates(rec)
                         recovered[dn] = SourceReference(
-                            drawing_id=int(rec.get("drawingId", 0) or 0),
+                            drawing_id=self._safe_drawing_id(rec.get("drawingId")),
                             drawing_name=dn,
                             drawing_title=rec.get("drawingTitle", ""),
-                            s3_url=self._build_s3_url(sanitized, pdf_name),
+                            s3_url=self._build_s3_url(sanitized, safe_pdf),
                             pdf_name=pdf_name,
                             x=x, y=y, width=w, height=h,
                         )
