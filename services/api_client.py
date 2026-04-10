@@ -190,6 +190,86 @@ class APIClient:
         )
         return merged, set_names
 
+    async def _fetch_with_fallback(
+        self,
+        project_id: int,
+        trade: str,
+        primary_path: str,
+        fallback_path: str,
+        primary_label: str,
+        fallback_label: str,
+        set_id: Optional[Union[int, str]] = None,
+    ) -> tuple[list[dict[str, Any]], str]:
+        """Try primary endpoint path. On HTTP error/timeout, retry with fallback path."""
+        try:
+            records = await self._fetch_all_pages(project_id, trade, set_id=set_id, endpoint_path=primary_path)
+            return records, primary_label
+        except (httpx.HTTPStatusError, httpx.TimeoutException) as exc:
+            logger.warning(
+                "Primary endpoint %s failed (%s), falling back to %s",
+                primary_path, exc, fallback_path,
+            )
+            records = await self._fetch_all_pages(project_id, trade, set_id=set_id, endpoint_path=fallback_path)
+            return records, fallback_label
+
+    async def get_by_trade(
+        self,
+        project_id: int,
+        trade: str,
+        cache_service: Optional["CacheService"] = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Fetch records via byTrade (rich). Falls back to summaryByTrade."""
+        if not settings.use_new_api:
+            records = await self.get_summary_by_trade(project_id, trade)
+            return records, {"endpoint_used": "summaryByTrade", "fallback": False}
+
+        records, label = await self._fetch_with_fallback(
+            project_id, trade,
+            primary_path=settings.by_trade_path,
+            fallback_path=settings.summary_by_trade_path,
+            primary_label="byTrade",
+            fallback_label="summaryByTrade",
+        )
+        return records, {"endpoint_used": label, "fallback": label != "byTrade"}
+
+    async def get_by_trade_and_set(
+        self,
+        project_id: int,
+        trade: str,
+        set_ids: list[Union[int, str]],
+        cache_service: Optional["CacheService"] = None,
+    ) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
+        """Fetch records via byTradeAndSet (rich). Falls back to summaryByTradeAndSet."""
+        if not settings.use_new_api:
+            records, set_names = await self.get_summary_by_trade_and_set(project_id, trade, set_ids)
+            return records, set_names, {"endpoint_used": "summaryByTradeAndSet", "fallback": False}
+
+        all_records: list[dict] = []
+        seen_ids: set[str] = set()
+        set_names: list[str] = []
+        used_label = "byTradeAndSet"
+
+        for sid in set_ids:
+            records, label = await self._fetch_with_fallback(
+                project_id, trade,
+                primary_path=settings.by_trade_and_set_path,
+                fallback_path=settings.summary_by_trade_and_set_path,
+                primary_label="byTradeAndSet",
+                fallback_label="summaryByTradeAndSet",
+                set_id=sid,
+            )
+            used_label = label
+            for rec in records:
+                rid = rec.get("_id", "")
+                if rid and rid not in seen_ids:
+                    seen_ids.add(rid)
+                    all_records.append(rec)
+                sn = (rec.get("setName") or "").strip()
+                if sn and sn not in set_names:
+                    set_names.append(sn)
+
+        return all_records, set_names, {"endpoint_used": used_label, "fallback": used_label != "byTradeAndSet"}
+
     async def fetch_project_metadata(self, project_id: int) -> dict[str, Any]:
         """Fetch actual trade list via the uniqueTrades API.
 
@@ -342,6 +422,7 @@ class APIClient:
         project_id: int,
         trade: str,
         set_id: Optional[Union[int, str]] = None,
+        endpoint_path: Optional[str] = None,  # NEW: override auto-path selection
     ) -> list[dict[str, Any]]:
         """
         Fetch ALL records using parallel batch pagination.
@@ -365,7 +446,9 @@ class APIClient:
             logger.error("HTTP client not initialized — call connect() first.")
             return []
 
-        if set_id is not None:
+        if endpoint_path:
+            path = endpoint_path
+        elif set_id is not None:
             path = settings.summary_by_trade_and_set_path
         else:
             path = settings.summary_by_trade_path
