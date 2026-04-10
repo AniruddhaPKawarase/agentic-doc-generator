@@ -127,3 +127,39 @@ def _send_chat(pid: int, text: str):
         msg["doc_name"] = doc_name
     st.session_state.chat_messages.append(msg)
     st.rerun()
+
+
+def render_document_history(api_base_url: str, project_id: int = None):
+    """Render a document history panel showing all generated documents."""
+    import requests
+
+    try:
+        params = {}
+        if project_id:
+            params["project_id"] = project_id
+        resp = requests.get(f"{api_base_url}/api/documents/list", params=params, timeout=10)
+        if resp.status_code != 200:
+            st.warning("Could not load document history.")
+            return
+
+        data = resp.json().get("data", {})
+        documents = data.get("documents", [])
+
+        if not documents:
+            st.info("No documents generated yet.")
+            return
+
+        st.markdown(f"**Generated Documents** ({len(documents)})")
+        for doc in documents:
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                trade = doc.get("trade", "")
+                filename = doc.get("filename", "")
+                size_kb = doc.get("size_kb", 0)
+                st.markdown(f"**{trade}** — `{filename}` ({size_kb} KB)")
+            with col2:
+                download_url = doc.get("download_url", "")
+                if download_url:
+                    st.markdown(f"[Download]({download_url})")
+    except Exception as e:
+        st.error(f"Error loading documents: {e}")

@@ -105,6 +105,105 @@ def _find_local(file_id: str) -> Path | None:
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+@router.get("/list")
+async def list_documents(
+    project_id: int = None,
+    trade: str = None,
+):
+    """
+    List all generated documents. Optionally filter by project_id and/or trade.
+    Scans S3 generated_documents/ prefix.
+    Returns list of documents with metadata.
+    """
+    if settings.storage_backend != "s3":
+        # Local mode: scan docs_dir
+        docs_dir = Path(settings.docs_dir)
+        if not docs_dir.exists():
+            return {"success": True, "data": {"documents": [], "total": 0}}
+
+        documents = []
+        for f in sorted(docs_dir.glob("*.docx"), key=lambda p: p.stat().st_mtime, reverse=True):
+            stat = f.stat()
+            # Extract file_id from filename (last 8 chars before .docx)
+            file_id = f.stem.rsplit("_", 1)[-1] if "_" in f.stem else f.stem
+            documents.append({
+                "file_id": file_id,
+                "filename": f.name,
+                "size_bytes": stat.st_size,
+                "size_kb": round(stat.st_size / 1024, 1),
+                "download_url": f"{settings.docs_base_url}/{file_id}/download",
+                "created_at": stat.st_mtime,
+                "storage": "local",
+            })
+        return {"success": True, "data": {"documents": documents, "total": len(documents)}}
+
+    # S3 mode: scan generated_documents/ prefix
+    _init_s3()
+    try:
+        from s3_utils.operations import list_objects
+
+        # Build prefix based on filters
+        prefix = f"{settings.s3_agent_prefix}/generated_documents/"
+        objects = await asyncio.to_thread(list_objects, prefix, 5000)
+
+        documents = []
+        for obj in objects:
+            key = obj["Key"]
+            # Skip non-document files
+            if not key.endswith((".docx", ".pdf", ".csv", ".json")):
+                continue
+
+            # Parse S3 key: {prefix}/generated_documents/{ProjectName}_{ProjectID}/{Trade}/{filename}
+            parts = key.replace(prefix, "").split("/")
+            if len(parts) < 3:
+                continue
+
+            project_folder = parts[0]  # e.g. "SINGH_RESIDENCE_ID_7276_7276"
+            trade_folder = parts[1]     # e.g. "Concrete"
+            filename = parts[2]
+
+            # Extract project_id from folder name (last numeric segment)
+            folder_parts = project_folder.rsplit("_", 1)
+            try:
+                doc_project_id = int(folder_parts[-1])
+            except (ValueError, IndexError):
+                doc_project_id = 0
+
+            # Apply filters
+            if project_id and doc_project_id != project_id:
+                continue
+            if trade and trade.lower() != trade_folder.lower():
+                continue
+
+            # Extract file_id from filename
+            stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+            file_id_part = stem.rsplit("_", 1)[-1] if "_" in stem else stem
+
+            documents.append({
+                "file_id": file_id_part,
+                "filename": filename,
+                "s3_key": key,
+                "project_folder": project_folder,
+                "project_id": doc_project_id,
+                "trade": trade_folder,
+                "size_bytes": obj.get("Size", 0),
+                "size_kb": round(obj.get("Size", 0) / 1024, 1),
+                "download_url": f"{settings.docs_base_url}/{file_id_part}/download",
+                "created_at": obj.get("LastModified", ""),
+                "storage": "s3",
+            })
+
+        # Sort by created_at descending (newest first)
+        documents.sort(key=lambda d: str(d.get("created_at", "")), reverse=True)
+
+        return {"success": True, "data": {"documents": documents, "total": len(documents)}}
+
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error("Failed to list S3 documents: %s", e)
+        return {"success": False, "error": str(e), "data": {"documents": [], "total": 0}}
+
+
 @router.get("/{file_id}/download")
 async def download_document(file_id: str):
     """Download a generated Word document."""

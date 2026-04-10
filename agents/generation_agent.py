@@ -408,6 +408,18 @@ class GenerationAgent:
             "doc_type": intent.document_type,
             "groundedness_score": guard_result.confidence_score,
         }
+        # Persist document metadata in session for document history
+        if generated_doc:
+            assistant_metadata["document"] = {
+                "file_id": generated_doc.file_id,
+                "filename": generated_doc.filename,
+                "file_path": generated_doc.file_path,
+                "download_url": generated_doc.download_url,
+                "trade": generated_doc.trade,
+                "document_type": generated_doc.document_type,
+                "size_bytes": generated_doc.size_bytes,
+                "created_at": generated_doc.created_at.isoformat(),
+            }
         persist_tasks: list = [
             self._sessions.add_turn(
                 session,
@@ -760,6 +772,18 @@ class GenerationAgent:
             "doc_type": intent.document_type,
             "groundedness_score": guard_result.confidence_score,
         }
+        # Persist document metadata in session for document history
+        if generated_doc:
+            assistant_metadata["document"] = {
+                "file_id": generated_doc.file_id,
+                "filename": generated_doc.filename,
+                "file_path": generated_doc.file_path,
+                "download_url": generated_doc.download_url,
+                "trade": generated_doc.trade,
+                "document_type": generated_doc.document_type,
+                "size_bytes": generated_doc.size_bytes,
+                "created_at": generated_doc.created_at.isoformat(),
+            }
         persist_tasks = [
             self._sessions.add_turn(
                 session,

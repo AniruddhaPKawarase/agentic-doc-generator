@@ -3,7 +3,7 @@ Page 4: Chat Interface.
 """
 import streamlit as st
 
-from components.chat import _send_chat, render_chat_messages
+from components.chat import _send_chat, render_chat_messages, render_document_history
 from utils.session import nav
 
 
@@ -16,6 +16,14 @@ def page_chat():
         return
 
     pid = proj["project_id"]
+
+    # Sidebar: Document History
+    with st.sidebar:
+        st.markdown("### Document History")
+        render_document_history(
+            api_base_url=st.session_state.get("api_base_url", "http://localhost:8003"),
+            project_id=st.session_state.get("project_id"),
+        )
 
     # Header
     st.markdown(
