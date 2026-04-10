@@ -101,6 +101,11 @@ class Settings(BaseSettings):
     scope_gap_classification_max_tokens: int = 4000
     scope_gap_quality_max_tokens: int = 4000
 
+    # ── API Migration (v4) ───────────────────────────────────
+    use_new_api: bool = True
+    s3_pdf_url_pattern: str = "https://{bucket}.s3.amazonaws.com/{path}/{name}.pdf"
+    source_ref_enabled: bool = True
+
     # ── Rate Limiting & Concurrency ──────────────────────
     rate_limit_generate: str = "10/minute"
     rate_limit_read: str = "60/minute"

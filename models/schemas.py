@@ -195,6 +195,19 @@ class ChatResponse(BaseModel):
         None,
         description="Per-step token counts: {steps: {step_name: {input_tokens, output_tokens, cost_usd, elapsed_ms}}, totals: {...}}",
     )
+    # ── Source references (v4 API migration) ─────────────────
+    source_references: dict[str, dict] = Field(
+        default_factory=dict,
+        description="Map of drawingName -> {drawing_id, s3_url, pdf_name, x, y, width, height}",
+    )
+    api_version: str = Field(
+        "",
+        description="API endpoint used: 'byTrade', 'byTradeAndSet', 'summaryByTrade' (fallback)",
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Non-blocking warnings: missing sources, fallback alerts, etc.",
+    )
 
 
 class ProjectContextResponse(BaseModel):
@@ -210,4 +223,5 @@ class HealthResponse(BaseModel):
     status: str = "ok"
     redis: str = "unknown"
     openai: str = "unknown"
+    new_api: str = "unknown"
     version: str = ""
