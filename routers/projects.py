@@ -6,6 +6,8 @@ GET /api/projects/{project_id}/context
   Used by the frontend to populate the sidebar and chip filters.
 """
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.requests import Request
 
@@ -42,3 +44,42 @@ async def get_project_context(
         total_text_items=0,
         cached=False,
     )
+
+
+@router.get("/{project_id}/raw-data")
+async def get_raw_data(
+    project_id: int,
+    trade: str,
+    set_id: Optional[int] = None,
+    skip: int = 0,
+    limit: int = 500,
+    request: Request = None,
+) -> dict:
+    """
+    Fetch raw API records for UI display.
+    Full path: GET /api/projects/{project_id}/raw-data?trade=Civil&set_id=4720
+    """
+    api_client = request.app.state.api_client
+    cache_service = request.app.state.cache
+
+    if set_id:
+        records, _, _ = await api_client.get_by_trade_and_set(
+            project_id, trade, [set_id], cache_service=cache_service
+        )
+    else:
+        records, _ = await api_client.get_by_trade(
+            project_id, trade, cache_service=cache_service
+        )
+
+    total = len(records)
+    page = records[skip : skip + limit]
+    return {
+        "success": True,
+        "data": {
+            "records": page,
+            "total": total,
+            "skip": skip,
+            "limit": limit,
+            "has_more": (skip + limit) < total,
+        },
+    }
