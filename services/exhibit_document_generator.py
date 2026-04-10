@@ -99,6 +99,7 @@ class ExhibitDocumentGenerator:
         document_type: str,
         drawing_summary: Optional[list[dict]] = None,
         title: Optional[str] = None,
+        source_index: dict = None,
     ) -> GeneratedDocument:
         return await asyncio.to_thread(
             self.generate_sync,
@@ -108,6 +109,7 @@ class ExhibitDocumentGenerator:
             document_type=document_type,
             drawing_summary=drawing_summary,
             title=title,
+            source_index=source_index,
         )
 
     # ── Synchronous builder ────────────────────────────────────────
@@ -122,6 +124,7 @@ class ExhibitDocumentGenerator:
         title: Optional[str] = None,
         # project_id used for filename and GeneratedDocument metadata
         project_id: int = 0,
+        source_index: dict = None,
     ) -> GeneratedDocument:
         # Resolve display name
         if project_id and not project_name:
@@ -137,6 +140,9 @@ class ExhibitDocumentGenerator:
             self._add_drawing_table(doc, drawing_summary, trade)
 
         self._add_footer(doc, display_name, trade)
+
+        if source_index and settings.source_ref_enabled:
+            self._add_traceability_table(doc, source_index)
 
         # Build filename with project name slug + project_id
         # e.g. Exhibit_GranvilleHotel_Electrical_scope_7298_a1b2c3d4.docx
@@ -207,6 +213,70 @@ class ExhibitDocumentGenerator:
         for f in self._docs_dir.glob(f"*_{file_id[:8]}.docx"):
             return f
         return None
+
+    # ── Hyperlinks and traceability ────────────────────────────────
+
+    def _add_hyperlink(self, paragraph, url: str, text: str, color: str = "0563C1"):
+        """Add a clickable hyperlink to a Word paragraph."""
+        part = paragraph.part
+        r_id = part.relate_to(
+            url,
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+            is_external=True,
+        )
+        hyperlink = OxmlElement("w:hyperlink")
+        hyperlink.set(qn("r:id"), r_id)
+        run = OxmlElement("w:r")
+        rPr = OxmlElement("w:rPr")
+        c = OxmlElement("w:color")
+        c.set(qn("w:val"), color)
+        rPr.append(c)
+        u = OxmlElement("w:u")
+        u.set(qn("w:val"), "single")
+        rPr.append(u)
+        run.append(rPr)
+        t = OxmlElement("w:t")
+        t.text = text
+        run.append(t)
+        hyperlink.append(run)
+        paragraph._element.append(hyperlink)
+
+    def _add_traceability_table(self, doc, source_index):
+        """Append a source reference traceability table to the document."""
+        if not source_index:
+            return
+        doc.add_page_break()
+        doc.add_heading("Source Reference Table", level=2)
+        table = doc.add_table(rows=1, cols=4)
+        try:
+            table.style = "Light Grid Accent 1"
+        except KeyError:
+            table.style = "Table Grid"
+        headers = ["Drawing Name", "Drawing Title", "PDF Link", "Coordinates"]
+        for i, h in enumerate(headers):
+            table.rows[0].cells[i].text = h
+        for ref in sorted(source_index.values(), key=lambda r: r.drawing_name):
+            row = table.add_row().cells
+            p = row[0].paragraphs[0]
+            if ref.s3_url:
+                self._add_hyperlink(p, ref.s3_url, ref.drawing_name)
+            else:
+                p.text = ref.drawing_name
+            row[1].text = ref.drawing_title
+            p2 = row[2].paragraphs[0]
+            if ref.s3_url:
+                self._add_hyperlink(p2, ref.s3_url, "View PDF")
+            else:
+                p2.text = "N/A"
+            if ref.x is not None and ref.y is not None:
+                row[3].text = f"({ref.x}, {ref.y}) {ref.width}x{ref.height}"
+            else:
+                row[3].text = "\u2014"
+        hyperlink_count = sum(1 for ref in source_index.values() if ref.s3_url)
+        logger.info(
+            "Traceability table: %d drawings, %d hyperlinks",
+            len(source_index), hyperlink_count,
+        )
 
     # ── Document structure builders ────────────────────────────────
 
