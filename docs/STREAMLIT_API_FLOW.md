@@ -32,9 +32,15 @@ GET http://54.197.189.113:8003/health
   "status": "ok",
   "redis": "in-memory-only",
   "openai": "configured",
+  "new_api": "ok",
   "version": "2.1.0"
 }
 ```
+
+**`new_api` values:**
+- `"ok"` — byTrade endpoint is reachable
+- `"degraded (using fallback)"` — falling back to summaryByTrade
+- `"disabled"` — `USE_NEW_API=false` in .env
 
 ---
 
@@ -392,7 +398,7 @@ Content-Type: application/json
 ```json
 {
   "project_id": 7276,
-  "project_name": "",
+  "project_name": "SINGH RESIDENCE",
   "trade": "Doors",
   "items": [
     {
@@ -420,29 +426,32 @@ Content-Type: application/json
   ],
   "completeness": {
     "drawing_coverage_pct": 66.7,
-    "csi_coverage_pct": 100.0,
-    "overall_pct": 83.3,
+    "csi_coverage_pct": 0.0,
+    "overall_pct": 63.3,
     "is_complete": false,
-    "attempt": 3
+    "attempt": 5
   },
   "quality": {
     "accuracy_score": 0.95
   },
   "documents": {
-    "word_path": "./generated_docs/7276_Doors_20260409_070721.docx",
-    "pdf_path": "./generated_docs/7276_Doors_20260409_070721.pdf",
-    "csv_path": "./generated_docs/7276_Doors_20260409_070721.csv",
-    "json_path": "./generated_docs/7276_Doors_20260409_070721.json"
+    "word_path": "./generated_docs/7276_Singh_Residence_Doors_Scope_of_Work.docx",
+    "pdf_path": "./generated_docs/7276_Singh_Residence_Doors_Scope_of_Work.pdf",
+    "csv_path": "./generated_docs/7276_Singh_Residence_Doors_Scope_of_Work.csv",
+    "json_path": "./generated_docs/7276_Singh_Residence_Doors_Scope_of_Work.json"
   },
   "pipeline_stats": {
-    "total_ms": 71095,
-    "attempts": 3,
+    "total_ms": 91662,
+    "attempts": 5,
     "tokens_used": 12808,
     "estimated_cost_usd": 0.025616,
     "records_processed": 3,
-    "items_extracted": 6
+    "items_extracted": 7
   }
 }
+```
+
+> **Note on exported documents:** The Word/PDF exports contain ONLY clean scope text grouped by drawing — no ambiguities, gotchas, completeness report, CSI/confidence/source metadata, or pipeline footer. The JSON export remains a full data dump with all fields. See [AGENT_PROMPTS.md](AGENT_PROMPTS.md) for pipeline details.
 ```
 
 ---
@@ -462,7 +471,7 @@ Called when the user clicks Word / PDF / CSV / JSON download buttons in the Repo
 ### `GET /api/documents/{file_id}/download`
 
 ```
-Path: file_id = "7276_Doors_20260409_070721"
+Path: file_id = "7276_Singh_Residence_Doors_Scope_of_Work"
 No body
 ```
 
@@ -470,7 +479,7 @@ No body
 
 **Postman example:**
 ```
-GET http://54.197.189.113:8003/api/documents/7276_Doors_20260409_070721/download
+GET http://54.197.189.113:8003/api/documents/7276_Singh_Residence_Doors_Scope_of_Work/download
 ```
 
 **Verified:** Returns HTTP 307 redirect to S3 presigned URL.
@@ -479,12 +488,14 @@ GET http://54.197.189.113:8003/api/documents/7276_Doors_20260409_070721/download
 ```json
 {
   "documents": {
-    "word_path": "./generated_docs/7276_Doors_20260409_070721.docx",
-    "pdf_path": "./generated_docs/7276_Doors_20260409_070721.pdf"
+    "word_path": "./generated_docs/7276_Singh_Residence_Doors_Scope_of_Work.docx",
+    "pdf_path": "./generated_docs/7276_Singh_Residence_Doors_Scope_of_Work.pdf"
   }
 }
 ```
-The file_id is: `7276_Doors_20260409_070721`
+The file_id is: `7276_Singh_Residence_Doors_Scope_of_Work`
+
+**Filename format:** `{project_id}_{Project_Name}_{Trade}_Scope_of_Work.{ext}` — project name comes from SQL database lookup.
 
 ### `GET /api/documents/{file_id}/info`
 
@@ -690,7 +701,13 @@ Content-Type: application/json
   "groundedness_score": 0.4,
   "needs_clarification": false,
   "pipeline_ms": 38590,
-  "cached": false
+  "cached": false,
+  "source_references": {
+    "A-12": {"drawing_id": 12345, "s3_url": "https://...", "pdf_name": "...", "x": 100, "y": 200, "width": 50, "height": 30},
+    "A-13": {"drawing_id": 12346, "s3_url": "https://...", "pdf_name": "...", "x": null, "y": null, "width": null, "height": null}
+  },
+  "api_version": "byTrade",
+  "warnings": []
 }
 ```
 
@@ -712,6 +729,56 @@ Content-Type: application/json
 - `"Summarize plumbing requirements"`
 - `"List HVAC ambiguities"`
 - `"Generate scope document"`
+
+---
+
+## STEP 9: Raw API Data (Chat Page — Expander)
+
+Called by the "Raw API Data" expander below each chat response to display all records.
+
+### `GET /api/projects/{project_id}/raw-data`
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `trade` | string | Yes | — | Trade name (e.g., "Civil", "Electrical") |
+| `set_id` | int | No | null | Optional set ID filter |
+| `skip` | int | No | 0 | Pagination offset |
+| `limit` | int | No | 500 | Records per page |
+
+**Postman example:**
+```
+GET http://54.197.189.113:8003/api/projects/7292/raw-data?trade=Civil&set_id=4720&skip=0&limit=50
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "records": [
+      {
+        "_id": "69a700bd12179a5f1c8263d5",
+        "projectId": 7292,
+        "drawingId": 318845,
+        "drawingName": "A102",
+        "drawingTitle": "ARCHITECTURAL SITE PLAN",
+        "s3BucketPath": "ifieldsmart/proj/Drawings/pdf",
+        "pdfName": "pdfA102Plan",
+        "text": "MATCH EXISTING SIDEWALK",
+        "x": 3743, "y": 738, "width": 144, "height": 69,
+        "csi_division": ["03 - Concrete"],
+        "trades": ["Civil"]
+      }
+    ],
+    "total": 342,
+    "skip": 0,
+    "limit": 50,
+    "has_more": true
+  }
+}
+```
+
+**UI integration:** The Streamlit chat component calls this after each response. Results are displayed in a collapsible `st.expander("Raw API Data")` with column toggles, search/sort (via `st.dataframe`), and CSV export.
 
 ---
 
