@@ -5,7 +5,9 @@
 **Headers for all POST requests:** `Content-Type: application/json`
 
 APIs listed in the exact order they are hit as you walk through the Streamlit UI.
-All responses verified against live sandbox on 2026-04-09.
+All responses verified against live sandbox on 2026-04-10.
+
+**v4 API Migration (2026-04-10):** Steps 0, 8, 9, 10 are new or updated. The agent now uses the richer `byTrade`/`byTradeAndSet` endpoints with source references, S3 PDF hyperlinks in Word documents, raw data display, and document history persistence.
 
 ---
 
@@ -782,6 +784,116 @@ GET http://54.197.189.113:8003/api/projects/7292/raw-data?trade=Civil&set_id=472
 
 ---
 
+## STEP 10: Document History (Chat Page — Sidebar)
+
+Called by the Document History sidebar panel to list all previously generated documents for the current project.
+
+### `GET /api/documents/list`
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `project_id` | int | No | null | Filter by project ID |
+| `trade` | string | No | null | Filter by trade name |
+
+**What it does:** Scans the S3 `generated_documents/` prefix (or local `docs_dir` when `STORAGE_BACKEND=local`), returns all document files with metadata. Documents are **never deleted** — the list grows over time. Supports filtering by project and trade.
+
+**Postman example:**
+```
+GET http://54.197.189.113:8003/api/documents/list?project_id=7276
+```
+
+**Verified response:**
+```json
+{
+  "success": true,
+  "data": {
+    "documents": [
+      {
+        "file_id": "891295d6",
+        "filename": "scope_Concrete_SINGHRESIDENCE_7276_891295d6.docx",
+        "s3_key": "construction-intelligence-agent/generated_documents/SINGH_RESIDENCE_ID_7276_7276/Concrete/scope_Concrete_SINGHRESIDENCE_7276_891295d6.docx",
+        "project_folder": "SINGH_RESIDENCE_ID_7276_7276",
+        "project_id": 7276,
+        "trade": "Concrete",
+        "size_bytes": 42872,
+        "size_kb": 41.9,
+        "download_url": "https://ai5.ifieldsmart.com/construction/api/documents/891295d6/download",
+        "created_at": "2026-04-10T09:00:00Z",
+        "storage": "s3"
+      },
+      {
+        "file_id": "6ffd56e9",
+        "filename": "scope_Electrical_SINGHRESIDENCE_7276_6ffd56e9.docx",
+        "s3_key": "construction-intelligence-agent/generated_documents/SINGH_RESIDENCE_ID_7276_7276/Electrical/scope_Electrical_SINGHRESIDENCE_7276_6ffd56e9.docx",
+        "project_folder": "SINGH_RESIDENCE_ID_7276_7276",
+        "project_id": 7276,
+        "trade": "Electrical",
+        "size_bytes": 38900,
+        "size_kb": 38.0,
+        "download_url": "https://ai5.ifieldsmart.com/construction/api/documents/6ffd56e9/download",
+        "created_at": "2026-04-10T08:30:00Z",
+        "storage": "s3"
+      }
+    ],
+    "total": 2
+  }
+}
+```
+
+**Filter by trade:**
+```
+GET http://54.197.189.113:8003/api/documents/list?project_id=7276&trade=Concrete
+```
+
+**UI integration:** The Streamlit chat page sidebar calls this on page load and displays the document list with download links. Documents include Word exports with:
+- Clickable S3 PDF hyperlinks on drawing names
+- Source Reference Traceability Table at the end
+- Project name, trade, date in header/footer
+
+**S3 folder structure:**
+```
+agentic-ai-production/
+  construction-intelligence-agent/
+    generated_documents/
+      {ProjectName}_{ProjectID}/
+        {TradeName}/
+          scope_Concrete_SINGHRESIDENCE_7276_891295d6.docx
+          Exhibit_SINGHRESIDENCE_Electrical_scope_7276_e5f6.docx
+    conversation_memory/
+      session_{session_id}.json    ← includes document metadata per turn
+      tokens_{session_id}.json
+    api_logs/
+      {YYYY-MM-DD}/
+        construction_agent.log
+```
+
+**Session JSON document metadata (persisted in S3):**
+
+Each assistant message in the session JSON now includes document metadata:
+```json
+{
+  "role": "assistant",
+  "content": "**Electrical Scope of Work...**",
+  "metadata": {
+    "trade": "Electrical",
+    "doc_type": "scope",
+    "groundedness_score": 0.4,
+    "document": {
+      "file_id": "891295d6-...",
+      "filename": "scope_Electrical_SINGHRESIDENCE_7276_891295d6.docx",
+      "file_path": "s3://agentic-ai-production/construction-intelligence-agent/generated_documents/...",
+      "download_url": "https://ai5.ifieldsmart.com/construction/api/documents/891295d6/download",
+      "trade": "Electrical",
+      "document_type": "scope",
+      "size_bytes": 38900,
+      "created_at": "2026-04-10T08:30:00Z"
+    }
+  }
+}
+```
+
+---
+
 ## Highlights CRUD (Drawing View)
 
 All highlight endpoints require `X-User-Id` header. Highlights are stored per-user in S3.
@@ -873,19 +985,21 @@ Query: project_id=7276&drawing_name=E0.03
 
 Copy these in order. Each step builds on the previous.
 
-| # | Method | URL | Body |
-|---|--------|-----|------|
-| 0 | GET | `http://54.197.189.113:8003/health` | — |
-| 0b | GET | `https://mongo.ifieldsmart.com/api/drawingText/uniqueTrades?projectId=7276` | — |
-| 1 | GET | `http://54.197.189.113:8003/api/scope-gap/projects/7276/drawings` | — |
-| 2 | GET | `http://54.197.189.113:8003/api/scope-gap/projects/7276/trades` | — |
-| 3 | POST | `http://54.197.189.113:8003/api/scope-gap/generate` | `{"project_id": 7276, "trade": "Doors"}` |
-| 4 | — | — | Report view (uses Step 3 result) |
-| 5 | GET | `http://54.197.189.113:8003/api/documents/{file_id}/download` | — (get file_id from Step 3 `documents.word_path`) |
-| 6 | POST | `http://54.197.189.113:8003/api/scope-gap/projects/7276/run-all` | `{"force_rerun": false}` |
-| 7 | GET | `http://54.197.189.113:8003/api/scope-gap/projects/7276/status` | — |
-| 8 | POST | `http://54.197.189.113:8003/api/chat` | `{"project_id": 7276, "query": "What are the electrical scope gaps?"}` |
-| 9 | POST | `http://54.197.189.113:8003/api/scope-gap/highlights` | `{"project_id": 7276, "drawing_name": "E0.03", "x": 100, "y": 200, "width": 300, "height": 40, "label": "Test"}` + Header: `X-User-Id: testuser` |
+| # | Method | URL | Body | New? |
+|---|--------|-----|------|------|
+| 0 | GET | `http://54.197.189.113:8003/health` | — | Updated (v4: `new_api` field) |
+| 0b | GET | `https://mongo.ifieldsmart.com/api/drawingText/uniqueTrades?projectId=7276` | — | |
+| 1 | GET | `http://54.197.189.113:8003/api/scope-gap/projects/7276/drawings` | — | |
+| 2 | GET | `http://54.197.189.113:8003/api/scope-gap/projects/7276/trades` | — | |
+| 3 | POST | `http://54.197.189.113:8003/api/scope-gap/generate` | `{"project_id": 7276, "trade": "Doors"}` | |
+| 4 | — | — | Report view (uses Step 3 result) | |
+| 5 | GET | `http://54.197.189.113:8003/api/documents/{file_id}/download` | — (get file_id from Step 3) | |
+| 6 | POST | `http://54.197.189.113:8003/api/scope-gap/projects/7276/run-all` | `{"force_rerun": false}` | |
+| 7 | GET | `http://54.197.189.113:8003/api/scope-gap/projects/7276/status` | — | |
+| 8 | POST | `http://54.197.189.113:8003/api/chat` | `{"project_id": 7276, "query": "generate electrical scope"}` | Updated (v4: `source_references`, `api_version`, `warnings`) |
+| 9 | GET | `http://54.197.189.113:8003/api/projects/7292/raw-data?trade=Civil` | — | **NEW (v4)** |
+| 10 | GET | `http://54.197.189.113:8003/api/documents/list?project_id=7276` | — | **NEW (v4)** |
+| 11 | POST | `http://54.197.189.113:8003/api/scope-gap/highlights` | `{"project_id": 7276, "drawing_name": "E0.03", "x": 100, "y": 200, "width": 300, "height": 40, "label": "Test"}` + Header: `X-User-Id: testuser` | |
 
 ---
 
@@ -914,20 +1028,41 @@ Copy these in order. Each step builds on the previous.
 
 ## Source Code References
 
-| What | File |
-|------|------|
-| Streamlit main app | `scope-gap-ui/app.py` |
-| Workspace page (Steps 1-7) | `scope-gap-ui/pages/workspace.py` |
-| Chat page (Step 8) | `scope-gap-ui/pages/chat.py` |
-| API client (low-level HTTP) | `scope-gap-ui/api/client.py` |
-| Scope gap API calls | `scope-gap-ui/api/scope_gap.py` |
-| Chat send helper | `scope-gap-ui/components/chat.py` |
-| Document download buttons | `scope-gap-ui/components/export_panel.py` |
-| FastAPI chat routes | `routers/chat.py` |
-| FastAPI scope gap routes | `scope_pipeline/routers/scope_gap.py` |
-| FastAPI project endpoints | `scope_pipeline/routers/project_endpoints.py` |
-| Drawing index service | `scope_pipeline/services/drawing_index_service.py` |
-| Trade discovery service | `scope_pipeline/services/trade_discovery_service.py` |
-| API client (upstream HTTP) | `services/api_client.py` |
-| App config | `config.py` |
-| UI config (projects, trades) | `scope-gap-ui/config.py` |
+| What | File | v4 Changes |
+|------|------|------------|
+| Streamlit main app | `scope-gap-ui/app.py` | |
+| Workspace page (Steps 1-7) | `scope-gap-ui/pages/workspace.py` | |
+| Chat page (Step 8, 10) | `scope-gap-ui/pages/chat.py` | **v4:** Document history sidebar |
+| API client (low-level HTTP) | `scope-gap-ui/api/client.py` | **v4:** `get_raw_data()` added |
+| Scope gap API calls | `scope-gap-ui/api/scope_gap.py` | |
+| Chat component + raw data expander | `scope-gap-ui/components/chat.py` | **v4:** Raw data expander, fallback alerts, `render_document_history()` |
+| Source reference panel | `scope-gap-ui/components/reference_panel.py` | **v4:** `render_source_references()` with PDF links |
+| Document download buttons | `scope-gap-ui/components/export_panel.py` | |
+| FastAPI chat routes | `routers/chat.py` | |
+| FastAPI document routes (Step 5, 10) | `routers/documents.py` | **v4:** `GET /list` endpoint |
+| FastAPI project routes (Step 9) | `routers/projects.py` | **v4:** `GET /raw-data` endpoint |
+| FastAPI scope gap routes | `scope_pipeline/routers/scope_gap.py` | |
+| FastAPI project endpoints | `scope_pipeline/routers/project_endpoints.py` | |
+| Drawing index service | `scope_pipeline/services/drawing_index_service.py` | |
+| Trade discovery service | `scope_pipeline/services/trade_discovery_service.py` | |
+| API client (upstream HTTP) | `services/api_client.py` | **v4:** `get_by_trade()`, `get_by_trade_and_set()`, `_fetch_with_fallback()` |
+| Source index builder | `services/source_index.py` | **v4:** NEW — `SourceIndexBuilder`, `SourceReference` |
+| Context builder | `services/context_builder.py` | **v4:** Routes to `byTrade`/`byTradeAndSet` when `USE_NEW_API=true` |
+| Document generator | `services/document_generator.py` | **v4:** S3 hyperlinks, traceability table |
+| Exhibit document generator | `services/exhibit_document_generator.py` | **v4:** S3 hyperlinks, traceability table |
+| Pipeline orchestrator | `agents/generation_agent.py` | **v4:** Source index wiring, warnings, document metadata persistence |
+| Data agent | `agents/data_agent.py` | **v4:** Exposes raw records + API metadata |
+| Token tracker | `services/token_tracker.py` | **v4:** `elapsed_ms` override in `record_step()` |
+| App config | `config.py` | **v4:** `use_new_api`, `s3_pdf_url_pattern`, `source_ref_enabled` |
+| Pydantic schemas | `models/schemas.py` | **v4:** `source_references`, `api_version`, `warnings`, `new_api` |
+| UI config (projects, trades) | `scope-gap-ui/config.py` | |
+
+## v4 API Migration — New .env Variables
+
+```bash
+USE_NEW_API=true                    # Feature flag: true = byTrade endpoints, false = summaryByTrade
+S3_PDF_URL_PATTERN=https://{bucket}.s3.amazonaws.com/{path}/{name}.pdf
+SOURCE_REF_ENABLED=true             # Kill switch for source reference generation
+```
+
+**Rollback:** Set `USE_NEW_API=false` → restart → agent reverts to summaryByTrade. Total rollback: <30 seconds.
