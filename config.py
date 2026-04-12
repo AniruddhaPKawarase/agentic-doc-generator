@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     openai_output_cost_per_million: float = 1.60
     claude_model: str = ""
 
+    # ── Tiered LLM Models (Layer 2) ──────────────────────────────
+    intent_model: str = "gpt-4.1-nano"
+    followup_model: str = "gpt-4.1-nano"
+
     # ── MongoDB API ───────────────────────────────────────
     api_base_url: str = "https://mongo.ifieldsmart.com"
     summary_by_trade_path: str = "/api/drawingText/summaryByTrade"
@@ -26,13 +30,17 @@ class Settings(BaseSettings):
     by_trade_and_set_path: str = "/api/drawingText/byTradeAndSet"
     unique_trades_path: str = "/api/drawingText/uniqueTrades"
     api_auth_token: str = ""
-    api_timeout_seconds: int = 30
+    api_timeout_seconds: int = 60
 
     # ── Pagination ────────────────────────────────────────
     api_page_size: int = 500
     max_pagination_pages: int = 200
     max_summary_records: int = 0
-    parallel_fetch_concurrency: int = 30
+    parallel_fetch_concurrency: int = 50
+
+    # ── Bulk Fetch (Layer 1) ──────────────────────────────────────
+    bulk_fetch_enabled: bool = True
+    bulk_fetch_timeout: int = 60
 
     # ── Redis ─────────────────────────────────────────────
     redis_url: str = "redis://localhost:6379/0"
@@ -44,19 +52,24 @@ class Settings(BaseSettings):
 
     # ── Token budgets ─────────────────────────────────────
     max_context_tokens: int = 120000
-    max_output_tokens: int = 10000
+    max_output_tokens: int = 7000
     intent_max_tokens: int = 500
     follow_up_max_tokens: int = 400
     follow_up_questions_count: int = 3
     follow_up_questions_enabled: bool = True
 
     # ── Context compression ───────────────────────────────
-    note_max_chars: int = 300
+    note_max_chars: int = 200
     note_dedup_prefix_chars: int = 50
 
     # ── Cache TTLs ────────────────────────────────────────
-    cache_ttl_summary_data: int = 300
+    cache_ttl_summary_data: int = 900
     cache_ttl_query: int = 3600
+
+    # ── Disk Cache (Layer 4) ──────────────────────────────────────
+    disk_cache_enabled: bool = True
+    disk_cache_dir: str = ".cache"
+    cache_warmup_enabled: bool = True
 
     # ── Session ───────────────────────────────────────────
     session_max_messages: int = 20
