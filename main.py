@@ -266,6 +266,22 @@ async def lifespan(app: FastAPI):
 
     logger.info("All services initialised — API ready")
 
+    # Start background cache cleanup task
+    import asyncio as _asyncio
+
+    async def _cache_cleanup_loop():
+        while True:
+            await _asyncio.sleep(300)  # Every 5 minutes
+            try:
+                if hasattr(cache, '_disk') and cache._disk is not None:
+                    removed = await cache._disk.cleanup()
+                    if removed:
+                        logger.debug("Cache cleanup: removed %d expired files", removed)
+            except Exception as exc:
+                logger.warning("Cache cleanup error: %s", exc)
+
+    cleanup_task = _asyncio.create_task(_cache_cleanup_loop())
+
     yield  # App runs here
 
     # ── Shutdown ──────────────────────────────────────────────────
