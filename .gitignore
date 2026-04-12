@@ -49,3 +49,6 @@ _archive/
 # Claude Code internal
 CLAUDE.md
 claude_code_config.json
+
+# Disk cache (latency optimization)
+.cache/
