@@ -915,7 +915,7 @@ class GenerationAgent:
 
         try:
             resp = await self._client.chat.completions.create(
-                model=settings.openai_model,
+                model=settings.followup_model,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user_msg},

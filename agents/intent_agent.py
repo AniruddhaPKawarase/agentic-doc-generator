@@ -44,9 +44,12 @@ INTENT_KEYWORDS: dict[str, list[str]] = {
 class IntentAgent:
     """Detects trade/document type from user query with low-latency fallback."""
 
-    def __init__(self, available_trades: Optional[list[str]] = None):
+    def __init__(self, available_trades: Optional[list[str]] = None, openai_client=None):
         self._available_trades = available_trades or []
-        self._client = AsyncOpenAI(api_key=settings.openai_api_key) if settings.openai_api_key else None
+        if openai_client is not None:
+            self._client = openai_client
+        else:
+            self._client = AsyncOpenAI(api_key=settings.openai_api_key) if settings.openai_api_key else None
 
     def update_trades(self, trades: list[str]) -> None:
         self._available_trades = trades
@@ -138,8 +141,10 @@ class IntentAgent:
         self,
         query: str,
         available_trades: list[str],
-        keyword_result: IntentResult,
+        keyword_result: Optional[IntentResult] = None,
     ) -> IntentResult:
+        if keyword_result is None:
+            keyword_result = self._keyword_match(query.lower(), available_trades)
         if not self._client:
             return keyword_result
 
@@ -158,7 +163,7 @@ Return only JSON:
 }}"""
 
         response = await self._client.chat.completions.create(
-            model=settings.openai_model,
+            model=settings.intent_model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=settings.intent_max_tokens,
             response_format={"type": "json_object"},
