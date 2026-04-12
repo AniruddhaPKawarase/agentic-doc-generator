@@ -417,6 +417,73 @@ class APIClient:
 
     # ── Internal helpers ──────────────────────────────────────────────
 
+    async def _fetch_bulk(
+        self,
+        project_id: int,
+        trade: str,
+        set_id: Optional[Union[int, str]] = None,
+        endpoint_path: Optional[str] = None,
+    ) -> Optional[list[dict[str, Any]]]:
+        """
+        Attempt to fetch ALL records in a single API call without pagination.
+        Returns the record list on success, or None if the call fails/times out
+        (caller should fall back to paginated fetch).
+        """
+        if not settings.bulk_fetch_enabled:
+            return None
+
+        path = endpoint_path
+        if path is None:
+            path = (
+                settings.summary_by_trade_and_set_path
+                if set_id is not None
+                else settings.summary_by_trade_path
+            )
+
+        params: dict[str, Any] = {"projectId": project_id, "trade": trade}
+        if set_id is not None:
+            params["setId"] = set_id
+
+        t0 = time.perf_counter()
+        try:
+            resp = await self._http.get(
+                path,
+                params=params,
+                timeout=httpx.Timeout(settings.bulk_fetch_timeout, connect=10.0),
+            )
+            resp.raise_for_status()
+            records = self._extract_list(resp.json())
+
+            elapsed = int((time.perf_counter() - t0) * 1000)
+
+            if not records:
+                logger.info(
+                    "Bulk fetch returned empty for project=%s trade=%s set_id=%s (%d ms)",
+                    project_id, trade, set_id, elapsed,
+                )
+                return None
+
+            logger.info(
+                "Bulk fetch success: project=%s trade=%s set_id=%s → %d records (%d ms)",
+                project_id, trade, set_id, len(records), elapsed,
+            )
+            return records
+
+        except httpx.TimeoutException:
+            elapsed = int((time.perf_counter() - t0) * 1000)
+            logger.warning(
+                "Bulk fetch timeout for project=%s trade=%s set_id=%s (%d ms) — falling back to pagination",
+                project_id, trade, set_id, elapsed,
+            )
+            return None
+        except Exception as exc:
+            elapsed = int((time.perf_counter() - t0) * 1000)
+            logger.warning(
+                "Bulk fetch failed for project=%s trade=%s set_id=%s (%d ms): %s — falling back to pagination",
+                project_id, trade, set_id, elapsed, exc,
+            )
+            return None
+
     async def _fetch_all_pages(
         self,
         project_id: int,
@@ -442,6 +509,14 @@ class APIClient:
         returned only page 1 when the API's "count" field held the page count (50)
         rather than the true total record count.
         """
+        # Layer 1: Try bulk fetch first (single API call, no pagination)
+        bulk_result = await self._fetch_bulk(
+            project_id, trade, set_id=set_id, endpoint_path=endpoint_path,
+        )
+        if bulk_result is not None:
+            return bulk_result
+
+        # Fallback: paginated fetch (existing logic below)
         if not self._http:
             logger.error("HTTP client not initialized — call connect() first.")
             return []
