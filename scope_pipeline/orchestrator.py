@@ -267,13 +267,16 @@ class ScopeGapPipeline:
                 "Force-extracting %d missing drawings: %s",
                 len(force_missing), force_missing,
             )
-            for drawing_name in force_missing:
+
+            async def _force_extract_one(drawing_name: str) -> None:
+                """Force-extract a single missing drawing."""
+                nonlocal total_tokens
                 drawing_records = [
                     r for r in all_records
                     if (r.get("drawingName") or r.get("drawing_name", "")) == drawing_name
                 ]
                 if not drawing_records:
-                    continue
+                    return
 
                 force_input = {
                     "drawing_records": [
@@ -292,17 +295,16 @@ class ScopeGapPipeline:
                     force_result = await self._extraction.run(
                         force_input, emitter, attempt=attempt_count + 1,
                     )
-                    force_items = force_result.data
                     total_tokens += force_result.tokens_used
 
-                    for item in force_items:
+                    for item in force_result.data:
                         key = (item.drawing_name, item.text)
                         if key not in seen_keys:
                             seen_keys.add(key)
                             final_items.append(item)
 
                     force_class = await self._classification.run(
-                        force_items, emitter, trade=request.trade,
+                        force_result.data, emitter, trade=request.trade,
                     )
                     total_tokens += force_class.tokens_used
                     classified_keys = {
@@ -319,19 +321,20 @@ class ScopeGapPipeline:
                         "Force-extract failed for drawing %s: %s", drawing_name, exc,
                     )
 
-        # Step 5: Run quality agent
+            # Run force-extractions in parallel (batches of 5)
+            batch_size = 5
+            for i in range(0, len(force_missing), batch_size):
+                batch = force_missing[i:i + batch_size]
+                await asyncio.gather(*[_force_extract_one(d) for d in batch])
+
+        # Step 5 + 6: Run quality agent AND generate documents in PARALLEL
         final_merged = MergedResults(
             items=final_items,
             classified_items=final_classified,
             ambiguities=list(ambiguities),
             gotchas=list(gotchas),
         )
-        quality_result = await self._quality.run(final_merged, emitter)
-        quality_report: QualityReport = quality_result.data
-        total_tokens += quality_result.tokens_used
-        per_agent_timing["quality"] = quality_result.elapsed_ms
 
-        # Step 6: Generate documents
         pipeline_stats = PipelineStats(
             total_ms=int((time.monotonic() - pipeline_start) * 1000),
             attempts=attempt_count,
@@ -342,12 +345,13 @@ class ScopeGapPipeline:
             items_extracted=len(final_items),
         )
 
-        documents: DocumentSet = await self._document.generate_all(
+        quality_task = self._quality.run(final_merged, emitter)
+        document_task = self._document.generate_all(
             items=final_classified,
             ambiguities=ambiguities,
             gotchas=gotchas,
             completeness=completeness_report,
-            quality=quality_report,
+            quality=None,  # Quality not yet available — document doesn't depend on it
             project_id=request.project_id,
             project_name=project_display.get("name", project_name),
             project_location=project_display.get("city", ""),
@@ -355,6 +359,13 @@ class ScopeGapPipeline:
             stats=pipeline_stats,
             drawing_s3_urls=drawing_s3_urls,
         )
+
+        quality_result, documents = await asyncio.gather(
+            quality_task, document_task,
+        )
+        quality_report: QualityReport = quality_result.data
+        total_tokens += quality_result.tokens_used
+        per_agent_timing["quality"] = quality_result.elapsed_ms
 
         # Step 7 (already built): pipeline stats
 
