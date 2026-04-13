@@ -1007,3 +1007,65 @@ API_BASE_URL = "https://ai5.ifieldsmart.com/construction"
 
 7. **Document overwrite behavior**
    - Regenerating a document for the same Project + Set + Trade overwrites the existing S3 file.
+
+### Known Issue: Document Lost on Page Refresh (Frontend)
+
+**Problem:** After generating a document via `POST /api/chat`, the Angular frontend stores the document reference (`file_id`, `download_url`, `filename`) in component state. When the user refreshes the page, this state is lost and the UI shows no document — even though the document is safely persisted in S3.
+
+**Root cause:** This is a frontend state management issue, not a backend issue. The backend stores all generated documents permanently in S3.
+
+**Recommended fix for Angular frontend:**
+
+Call `GET /api/documents/list` on component initialization to recover previously generated documents:
+
+```typescript
+// document.service.ts
+@Injectable({ providedIn: 'root' })
+export class DocumentService {
+  constructor(private http: HttpClient) {}
+
+  getDocuments(projectId: number, setName?: string, trade?: string) {
+    let params = new HttpParams().set('project_id', projectId.toString());
+    if (setName) params = params.set('set_name', setName);
+    if (trade) params = params.set('trade', trade);
+    return this.http.get<any>(`/construction/api/documents/list`, { params });
+  }
+}
+
+// In your component
+ngOnInit() {
+  this.loadExistingDocuments();
+}
+
+loadExistingDocuments() {
+  this.documentService.getDocuments(this.projectId).subscribe(res => {
+    if (res.data.documents.length > 0) {
+      this.documents = res.data.documents;
+      // User can see and download any previously generated document
+      // No regeneration needed after page refresh
+    }
+  });
+}
+```
+
+**How it works:**
+1. User generates a document → backend saves to S3, returns metadata in response
+2. User refreshes the page → Angular component calls `GET /api/documents/list?project_id=X`
+3. Backend returns all documents for that project (with `set_name`, `trade`, `download_url`)
+4. Frontend displays the document list — user can download without regenerating
+
+**Optional enhancement:** Store the last document reference in `localStorage` for instant display before the API call completes:
+
+```typescript
+// After generation
+onDocumentGenerated(doc: GeneratedDocument) {
+  localStorage.setItem(`docs_${this.projectId}`, JSON.stringify(doc));
+}
+
+// On init — show cached immediately, then refresh from API
+ngOnInit() {
+  const cached = localStorage.getItem(`docs_${this.projectId}`);
+  if (cached) this.documents = [JSON.parse(cached)];
+  this.loadExistingDocuments(); // Always refresh from API (source of truth)
+}
+```
