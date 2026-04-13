@@ -327,38 +327,67 @@ class GenerationAgent:
         clarification_questions: list[str] = []
 
         # -- Document generation + follow-up questions -- parallel ----------
-        docgen_coro = asyncio.to_thread(
-            self._docgen.generate_sync,
-            content=answer,
-            project_id=request.project_id,
-            project_name=project_display_name,
-            trade=intent.trade or "General",
-            document_type=intent.document_type,
-            set_ids=set_ids,
-            set_names=set_names,
-            source_index=source_index if source_index else None,
-        ) if request.generate_document else _noop_coro()
+        generated_docs: list[GeneratedDocument] = []
 
-        followup_coro = self._generate_follow_up_questions(
-            answer=answer,
-            query=request.query,
-            trade=intent.trade or "General",
-            document_type=intent.document_type,
-        )
+        if request.generate_document and set_ids:
+            # Build set_id -> set_name mapping from raw records
+            set_name_map: dict[str, str] = {}
+            for rec in raw_records:
+                sid = rec.get("setId") or rec.get("set_id")
+                sname = (rec.get("setName") or rec.get("set_name") or "").strip()
+                if sid is not None and sname:
+                    set_name_map[str(sid)] = sname
 
-        doc_result, follow_up_questions = await asyncio.gather(
-            docgen_coro, followup_coro, return_exceptions=True
-        )
+            async def _gen_doc_for_set(sid):
+                sname = set_name_map.get(str(sid), f"Set_{sid}")
+                return await asyncio.to_thread(
+                    self._docgen.generate_sync,
+                    content=answer,
+                    project_id=request.project_id,
+                    project_name=project_display_name,
+                    trade=intent.trade or "General",
+                    document_type=intent.document_type,
+                    set_ids=[sid],
+                    set_names=[sname],
+                    set_name=sname,
+                    set_id=int(sid),
+                    source_index=source_index if source_index else None,
+                )
 
-        generated_doc: Optional[GeneratedDocument] = None
-        if request.generate_document and not isinstance(doc_result, BaseException):
-            generated_doc = doc_result
-        elif isinstance(doc_result, BaseException):
-            logger.error("Document generation failed: %s", doc_result)
+            doc_coros = [_gen_doc_for_set(sid) for sid in set_ids]
+            followup_coro = self._generate_follow_up_questions(
+                answer=answer,
+                query=request.query,
+                trade=intent.trade or "General",
+                document_type=intent.document_type,
+            )
 
-        if isinstance(follow_up_questions, BaseException):
-            logger.warning("Follow-up question generation failed: %s", follow_up_questions)
-            follow_up_questions = []
+            results = await asyncio.gather(*doc_coros, followup_coro, return_exceptions=True)
+            follow_up_questions = results[-1] if not isinstance(results[-1], BaseException) else []
+            if isinstance(follow_up_questions, BaseException):
+                logger.warning("Follow-up question generation failed: %s", follow_up_questions)
+                follow_up_questions = []
+
+            for r in results[:-1]:
+                if isinstance(r, BaseException):
+                    logger.error("Document generation failed for a set: %s", r)
+                else:
+                    generated_docs.append(r)
+        else:
+            # No document generation — just follow-up questions
+            followup_coro = self._generate_follow_up_questions(
+                answer=answer,
+                query=request.query,
+                trade=intent.trade or "General",
+                document_type=intent.document_type,
+            )
+            follow_up_questions = await followup_coro
+            if isinstance(follow_up_questions, BaseException):
+                logger.warning("Follow-up question generation failed: %s", follow_up_questions)
+                follow_up_questions = []
+
+        # Backward compat: first doc as singular `document`
+        generated_doc = generated_docs[0] if generated_docs else None
 
         pipeline_ms = int((time.perf_counter() - t_start) * 1000)
         t["total"] = pipeline_ms
@@ -386,6 +415,7 @@ class GenerationAgent:
             set_ids=set_ids,
             set_names=set_names,
             document=generated_doc,
+            documents=generated_docs,
             intent=intent,
             token_usage=usage,
             groundedness_score=guard_result.confidence_score,
@@ -693,38 +723,67 @@ class GenerationAgent:
         needs_clarification = False
 
         # -- Document generation + follow-up questions -- parallel ----------
-        docgen_coro = asyncio.to_thread(
-            self._docgen.generate_sync,
-            content=answer,
-            project_id=request.project_id,
-            project_name=project_display_name,
-            trade=intent.trade or "General",
-            document_type=intent.document_type,
-            set_ids=set_ids,
-            set_names=set_names_stream,
-            source_index=stream_source_index if stream_source_index else None,
-        ) if request.generate_document else _noop_coro()
+        generated_docs: list[GeneratedDocument] = []
 
-        followup_coro = self._generate_follow_up_questions(
-            answer=answer,
-            query=request.query,
-            trade=intent.trade or "General",
-            document_type=intent.document_type,
-        )
+        if request.generate_document and set_ids:
+            # Build set_id -> set_name mapping from raw records
+            stream_set_name_map: dict[str, str] = {}
+            for rec in stream_raw_records:
+                sid = rec.get("setId") or rec.get("set_id")
+                sname = (rec.get("setName") or rec.get("set_name") or "").strip()
+                if sid is not None and sname:
+                    stream_set_name_map[str(sid)] = sname
 
-        doc_result, follow_up_questions = await asyncio.gather(
-            docgen_coro, followup_coro, return_exceptions=True
-        )
+            async def _gen_doc_for_set_stream(sid):
+                sname = stream_set_name_map.get(str(sid), f"Set_{sid}")
+                return await asyncio.to_thread(
+                    self._docgen.generate_sync,
+                    content=answer,
+                    project_id=request.project_id,
+                    project_name=project_display_name,
+                    trade=intent.trade or "General",
+                    document_type=intent.document_type,
+                    set_ids=[sid],
+                    set_names=[sname],
+                    set_name=sname,
+                    set_id=int(sid),
+                    source_index=stream_source_index if stream_source_index else None,
+                )
 
-        generated_doc: Optional[GeneratedDocument] = None
-        if request.generate_document and not isinstance(doc_result, BaseException):
-            generated_doc = doc_result
-        elif isinstance(doc_result, BaseException):
-            logger.error("Document generation failed: %s", doc_result)
+            doc_coros = [_gen_doc_for_set_stream(sid) for sid in set_ids]
+            followup_coro = self._generate_follow_up_questions(
+                answer=answer,
+                query=request.query,
+                trade=intent.trade or "General",
+                document_type=intent.document_type,
+            )
 
-        if isinstance(follow_up_questions, BaseException):
-            logger.warning("Follow-up question generation failed: %s", follow_up_questions)
-            follow_up_questions = []
+            results = await asyncio.gather(*doc_coros, followup_coro, return_exceptions=True)
+            follow_up_questions = results[-1] if not isinstance(results[-1], BaseException) else []
+            if isinstance(follow_up_questions, BaseException):
+                logger.warning("Follow-up question generation failed: %s", follow_up_questions)
+                follow_up_questions = []
+
+            for r in results[:-1]:
+                if isinstance(r, BaseException):
+                    logger.error("Document generation failed for a set: %s", r)
+                else:
+                    generated_docs.append(r)
+        else:
+            # No document generation — just follow-up questions
+            followup_coro = self._generate_follow_up_questions(
+                answer=answer,
+                query=request.query,
+                trade=intent.trade or "General",
+                document_type=intent.document_type,
+            )
+            follow_up_questions = await followup_coro
+            if isinstance(follow_up_questions, BaseException):
+                logger.warning("Follow-up question generation failed: %s", follow_up_questions)
+                follow_up_questions = []
+
+        # Backward compat: first doc as singular `document`
+        generated_doc: Optional[GeneratedDocument] = generated_docs[0] if generated_docs else None
 
         pipeline_ms = int((time.perf_counter() - t_start) * 1000)
         pipeline_log.record_step("total_pipeline")
@@ -750,6 +809,7 @@ class GenerationAgent:
             set_ids=set_ids,
             set_names=set_names_stream,
             document=generated_doc,
+            documents=generated_docs,
             intent=intent,
             token_usage=usage,
             groundedness_score=guard_result.confidence_score,
