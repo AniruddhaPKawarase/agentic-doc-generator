@@ -33,6 +33,8 @@ def generated_document_key(
     agent_prefix: str,
     project_name: Optional[str],
     project_id: int,
+    set_name: str,
+    set_id: int,
     trade: str,
     filename: str,
 ) -> str:
@@ -40,16 +42,21 @@ def generated_document_key(
     Build S3 key for a generated document.
 
     Returns:
-        e.g. "construction-intelligence-agent/generated_documents/GranvilleHotel_7298/Electrical/scope_electrical_7298_a1b2c3d4.docx"
+        e.g. "construction-intelligence-agent/generated_documents/
+              Granville_Hotel(7298)/Foundation_Plans(4730)/Electrical/
+              scope_electrical_7298_a1b2c3d4.docx"
     """
     if project_name:
-        project_folder = f"{sanitize_name(project_name)}_{project_id}"
+        project_folder = f"{sanitize_name(project_name)}({project_id})"
     else:
-        project_folder = f"Project_{project_id}"
+        project_folder = f"Project({project_id})"
+
+    sanitized_set = sanitize_name(set_name) if set_name else ""
+    set_folder = f"{sanitized_set}({set_id})" if sanitized_set else f"Set({set_id})"
 
     trade_folder = sanitize_name(trade) if trade else "General"
 
-    return f"{agent_prefix}/generated_documents/{project_folder}/{trade_folder}/{filename}"
+    return f"{agent_prefix}/generated_documents/{project_folder}/{set_folder}/{trade_folder}/{filename}"
 
 
 def conversation_memory_key(agent_prefix: str, session_id: str) -> str:
