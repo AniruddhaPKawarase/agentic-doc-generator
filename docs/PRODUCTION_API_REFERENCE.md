@@ -5,6 +5,18 @@
 **Server:** Nginx → uvicorn port 8003
 **Headers:** `Content-Type: application/json` for all POST requests
 
+### Performance (Latency Optimization v4 — 2026-04-12)
+
+| Query Type | Latency | Notes |
+|------------|---------|-------|
+| Cached response | **~4s** | L1 in-memory or L2 disk cache hit |
+| Small trade (< 500 records) | **~25s** | Bulk fetch + LLM generation |
+| Large trade (2000+ records) | **~60s** | Bulk fetch + LLM generation |
+| **Previous latency** | **~10 min** | Before optimization |
+
+**Optimization layers:** Smart Bulk Fetch (single API call), Tiered LLM (gpt-4.1-nano for lightweight calls), Token Reduction (max_output 7k), Disk Cache (survives restarts), Pipeline Parallelism (quality‖document).
+See: `docs/superpowers/specs/2026-04-12-latency-optimization-design.md`
+
 ---
 
 ## 1. Health Check
@@ -55,7 +67,7 @@ Content-Type: application/json
   "session_id": null,
   "user_id": null,
   "generate_document": true,
-  "set_ids": null
+  "set_ids": [4720]
 }
 ```
 
@@ -66,7 +78,9 @@ Content-Type: application/json
 | `session_id` | string | No | null | Pass from previous response to continue conversation |
 | `user_id` | string | No | null | Optional user identifier |
 | `generate_document` | bool | No | true | Whether to generate a downloadable .docx |
-| `set_ids` | list[int] | No | null | Filter to specific drawing sets (e.g., [4720]) |
+| `set_ids` | list[int] | **Yes** (when `generate_document=true`) | null | Drawing set IDs to generate documents for. **Required when `generate_document` is `true`** — omitting it returns HTTP 422. Pass multiple IDs to generate one document per set. |
+
+> **Breaking change (2026-04-13):** `set_ids` is now **required** when `generate_document=true`. Previously it was optional. Requests missing `set_ids` while `generate_document=true` will receive HTTP 422: `"set_ids is required when generate_document is true"`.
 
 **Response:**
 ```json
@@ -74,8 +88,8 @@ Content-Type: application/json
   "session_id": "5f31a620-ab94-402f-aee1-bf8cfb4a2c07",
   "project_name": "SINGH RESIDENCE (ID: 7276)",
   "answer": "**Electrical Scope of Work Exhibit**\n\n**1. Smoke and Carbon Monoxide Detection Systems**\nDrawing Number(s): A-12, A-13...",
-  "set_ids": null,
-  "set_names": [],
+  "set_ids": [4720],
+  "set_names": ["Set A"],
   "intent": {
     "trade": "Electrical",
     "csi_divisions": ["26 - Electrical"],
@@ -88,13 +102,27 @@ Content-Type: application/json
   "document": {
     "file_id": "891295d6-b074-4988-afdc-8bef4ef71acd",
     "filename": "scope_Electrical_SINGHRESIDENCE_7276_891295d6.docx",
-    "file_path": "s3://agentic-ai-production/construction-intelligence-agent/generated_documents/SINGH_RESIDENCE_ID_7276_7276/Electrical/scope_Electrical_SINGHRESIDENCE_7276_891295d6.docx",
+    "file_path": "s3://agentic-ai-production/construction-intelligence-agent/generated_documents/SINGH RESIDENCE(7276)/Set A(4720)/Electrical/scope_Electrical_SINGHRESIDENCE_7276_891295d6.docx",
     "download_url": "https://ai5.ifieldsmart.com/construction/api/documents/891295d6-b074-4988-afdc-8bef4ef71acd/download",
     "project_id": 7276,
     "trade": "Electrical",
     "document_type": "scope",
     "size_bytes": 42872
   },
+  "documents": [
+    {
+      "file_id": "891295d6-b074-4988-afdc-8bef4ef71acd",
+      "filename": "scope_Electrical_SINGHRESIDENCE_7276_891295d6.docx",
+      "file_path": "s3://agentic-ai-production/construction-intelligence-agent/generated_documents/SINGH RESIDENCE(7276)/Set A(4720)/Electrical/scope_Electrical_SINGHRESIDENCE_7276_891295d6.docx",
+      "download_url": "https://ai5.ifieldsmart.com/construction/api/documents/891295d6-b074-4988-afdc-8bef4ef71acd/download",
+      "project_id": 7276,
+      "set_id": 4720,
+      "set_name": "Set A",
+      "trade": "Electrical",
+      "document_type": "scope",
+      "size_bytes": 42872
+    }
+  ],
   "token_usage": {
     "input_tokens": 1338,
     "output_tokens": 67,
@@ -109,7 +137,7 @@ Content-Type: application/json
     "Are there any cross-trade coordination items for Electrical?",
     "Generate a detailed takeoff for Electrical components"
   ],
-  "pipeline_ms": 38590,
+  "pipeline_ms": 26375,
   "cached": false,
   "token_log": {},
   "source_references": {
@@ -122,7 +150,12 @@ Content-Type: application/json
       "x": 100,
       "y": 200,
       "width": 50,
-      "height": 30
+      "height": 30,
+      "text": "Panel EP-1, 200A, 3-phase",
+      "annotations": [
+        { "text": "Panel EP-1, 200A, 3-phase", "x": 100, "y": 200, "width": 50, "height": 30 },
+        { "text": "Conduit run to MDP", "x": 300, "y": 150, "width": 40, "height": 20 }
+      ]
     },
     "A-13": {
       "drawing_id": 12346,
@@ -133,7 +166,9 @@ Content-Type: application/json
       "x": null,
       "y": null,
       "width": null,
-      "height": null
+      "height": null,
+      "text": null,
+      "annotations": []
     }
   },
   "api_version": "byTrade",
@@ -141,13 +176,49 @@ Content-Type: application/json
 }
 ```
 
+**ChatResponse field reference:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `document` | object | First generated document (backward-compatible). `null` if `generate_document=false`. |
+| `documents` | list[GeneratedDocument] | All generated documents, one per `set_id`. Empty array if `generate_document=false`. |
+
+**GeneratedDocument fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `file_id` | string | UUID for download/info endpoints |
+| `filename` | string | `.docx` filename |
+| `file_path` | string | Full S3 URI (`s3://agentic-ai-production/...`) |
+| `download_url` | string | Direct download link via this API |
+| `project_id` | int | Project the document belongs to |
+| `set_id` | int | Drawing set this document was generated for |
+| `set_name` | string | Human-readable set name |
+| `trade` | string | Trade (e.g., `"Electrical"`) |
+| `document_type` | string | Type (e.g., `"scope"`) |
+| `size_bytes` | int | File size |
+
+**source_references field reference:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `drawing_id` | int | Internal drawing identifier |
+| `drawing_name` | string | Drawing number (e.g., `"A-12"`) |
+| `drawing_title` | string | Human-readable title |
+| `s3_url` | string | Direct S3 URL to the source PDF |
+| `pdf_name` | string | PDF filename without extension |
+| `x`, `y`, `width`, `height` | int\|null | Bounding box of the primary annotation |
+| `text` | string\|null | **New (2026-04-13)** — Extracted text content from the primary annotation on this drawing |
+| `annotations` | array | **New (2026-04-13)** — All text+coordinate pairs found on this drawing. Each entry has `text`, `x`, `y`, `width`, `height`. Empty array when none. |
+
 **Follow-up message (continue conversation):**
 ```json
 {
   "project_id": 7276,
   "query": "Can you also check plumbing?",
   "session_id": "5f31a620-ab94-402f-aee1-bf8cfb4a2c07",
-  "generate_document": true
+  "generate_document": true,
+  "set_ids": [4720]
 }
 ```
 
@@ -157,14 +228,14 @@ Content-Type: application/json
 
 **`POST /api/chat/stream`**
 
-Same as `/api/chat` but streams the LLM response token-by-token via Server-Sent Events. Use for better UX on large responses (first token appears in ~90s instead of waiting 4+ minutes).
+Same as `/api/chat` but streams the LLM response token-by-token via Server-Sent Events. Use for better UX on large responses (first token appears in ~10-30s instead of waiting for full response).
 
 ```
 POST https://ai5.ifieldsmart.com/construction/api/chat/stream
 Content-Type: application/json
 ```
 
-**Request Body:** Same as `/api/chat`.
+**Request Body:** Same as `/api/chat`. The `set_ids` required-when-`generate_document` rule applies here too.
 
 **Response:** SSE event stream. Final event contains the full ChatResponse JSON.
 
@@ -174,18 +245,21 @@ Content-Type: application/json
 
 **`GET /api/documents/list`**
 
-Lists all generated documents stored in S3. Documents are never deleted. Supports filtering by project and trade.
+Lists all generated documents stored in S3. Documents are never deleted (regenerating the same Project/Set/Trade overwrites the previous file). Supports filtering by project, set name, and trade.
 
 ```
 GET https://ai5.ifieldsmart.com/construction/api/documents/list?project_id=7276
 GET https://ai5.ifieldsmart.com/construction/api/documents/list?project_id=7276&trade=Concrete
-GET https://ai5.ifieldsmart.com/construction/api/documents/list
+GET https://ai5.ifieldsmart.com/construction/api/documents/list?project_id=7276&set_name=set+a
 ```
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `project_id` | int | No | null | Filter by project ID |
-| `trade` | string | No | null | Filter by trade name |
+| `project_id` | int | **Yes** | — | Filter by project ID. **Required** as of 2026-04-13 — omitting it returns HTTP 422. |
+| `trade` | string | No | null | Filter by trade name (exact match) |
+| `set_name` | string | No | null | **New (2026-04-13)** — Filter by set name (partial match, case-insensitive) |
+
+> **Breaking change (2026-04-13):** `project_id` is now **required**. Previously listing all documents without a project filter was supported. Requests without `project_id` will receive HTTP 422.
 
 **Response:**
 ```json
@@ -196,14 +270,16 @@ GET https://ai5.ifieldsmart.com/construction/api/documents/list
       {
         "file_id": "891295d6",
         "filename": "scope_Concrete_SINGHRESIDENCE_7276_891295d6.docx",
-        "s3_key": "construction-intelligence-agent/generated_documents/SINGH_RESIDENCE_ID_7276_7276/Concrete/scope_Concrete_SINGHRESIDENCE_7276_891295d6.docx",
-        "project_folder": "SINGH_RESIDENCE_ID_7276_7276",
+        "s3_key": "construction-intelligence-agent/generated_documents/SINGH RESIDENCE(7276)/Set A(4720)/Concrete/scope_Concrete_SINGHRESIDENCE_7276_891295d6.docx",
+        "project_folder": "SINGH RESIDENCE(7276)",
         "project_id": 7276,
+        "set_id": 4720,
+        "set_name": "Set A",
         "trade": "Concrete",
         "size_bytes": 42872,
         "size_kb": 41.9,
         "download_url": "https://ai5.ifieldsmart.com/construction/api/documents/891295d6/download",
-        "created_at": "2026-04-10T09:00:00Z",
+        "created_at": "2026-04-13T09:00:00Z",
         "storage": "s3"
       }
     ],
@@ -211,6 +287,11 @@ GET https://ai5.ifieldsmart.com/construction/api/documents/list
   }
 }
 ```
+
+**Response field notes:**
+- `set_id` — Drawing set ID this document was generated for.
+- `set_name` — Human-readable set name extracted from the S3 path.
+- `s3_key` — Reflects the new 4-level path format `{ProjectName}({ProjectID})/{SetName}({SetID})/{Trade}/{file}`. Legacy 3-level paths from before 2026-04-13 are also returned as-is.
 
 ---
 
@@ -251,7 +332,7 @@ GET https://ai5.ifieldsmart.com/construction/api/documents/891295d6-b074-4988-af
   "size_kb": 41.9,
   "download_url": "https://ai5.ifieldsmart.com/construction/api/documents/891295d6/download",
   "storage": "s3",
-  "s3_key": "construction-intelligence-agent/generated_documents/SINGH_RESIDENCE_ID_7276_7276/Concrete/scope_Concrete_SINGHRESIDENCE_7276_891295d6.docx"
+  "s3_key": "construction-intelligence-agent/generated_documents/SINGH RESIDENCE(7276)/Set A(4720)/Concrete/scope_Concrete_SINGHRESIDENCE_7276_891295d6.docx"
 }
 ```
 
@@ -522,7 +603,7 @@ Content-Type: application/json
     "csi_coverage_pct": 100.0,
     "overall_pct": 83.3,
     "is_complete": false,
-    "attempt": 3
+    "attempt": 1
   },
   "quality": {
     "accuracy_score": 0.95
@@ -534,8 +615,8 @@ Content-Type: application/json
     "json_path": "./generated_docs/7276_Singh_Residence_Doors_Scope_of_Work.json"
   },
   "pipeline_stats": {
-    "total_ms": 71095,
-    "attempts": 3,
+    "total_ms": 45000,
+    "attempts": 1,
     "tokens_used": 12808,
     "estimated_cost_usd": 0.025616,
     "records_processed": 3,
@@ -820,8 +901,33 @@ X-User-Id: testuser
 | Invalid session ID | 404 | `{"detail": "Session not found"}` |
 | Invalid document ID | 404 | `{"detail": "Document not found or expired"}` |
 | Missing required field | 422 | `{"detail": [{"msg": "Field required", ...}]}` |
+| `generate_document=true` with missing `set_ids` | 422 | `{"detail": "set_ids is required when generate_document is true"}` |
+| `project_id` missing from `/api/documents/list` | 422 | `{"detail": [{"msg": "Field required", ...}]}` |
 | Invalid skip/limit | 422 | `{"detail": [{"msg": "Input should be >= 0", ...}]}` |
 | Server error | 500 | `{"detail": "Internal server error"}` |
+
+---
+
+## S3 Storage Structure
+
+**Bucket:** `agentic-ai-production`
+
+**New path format (2026-04-13+):**
+```
+construction-intelligence-agent/generated_documents/{ProjectName}({ProjectID})/{SetName}({SetID})/{Trade}/{filename}
+```
+
+**Example:**
+```
+construction-intelligence-agent/generated_documents/SINGH RESIDENCE(7276)/Set A(4720)/Electrical/scope_Electrical_SINGHRESIDENCE_7276_891295d6.docx
+```
+
+**Legacy path format (pre-2026-04-13):**
+```
+construction-intelligence-agent/generated_documents/{agent}/generated_documents/{ProjectName}_{ProjectID}/{Trade}/{filename}
+```
+
+Both formats are supported by the `/api/documents/list` endpoint. Document overwrite: regenerating a document for the same Project + Set + Trade **overwrites** the previous file (same S3 key).
 
 ---
 
@@ -843,7 +949,7 @@ X-User-Id: testuser
 | 1 | GET | `https://ai5.ifieldsmart.com/construction/health` |
 | 2 | GET | `https://ai5.ifieldsmart.com/construction/api/scope-gap/projects/7276/trades` |
 | 3 | GET | `https://ai5.ifieldsmart.com/construction/api/scope-gap/projects/7276/drawings` |
-| 4 | POST | `https://ai5.ifieldsmart.com/construction/api/chat` with `{"project_id":7276,"query":"generate concrete scope"}` |
+| 4 | POST | `https://ai5.ifieldsmart.com/construction/api/chat` with `{"project_id":7276,"query":"generate concrete scope","generate_document":true,"set_ids":[4720]}` |
 | 5 | GET | `https://ai5.ifieldsmart.com/construction/api/documents/list?project_id=7276` |
 | 6 | GET | `https://ai5.ifieldsmart.com/construction/api/documents/{file_id}/download` |
 | 7 | GET | `https://ai5.ifieldsmart.com/construction/api/projects/7276/raw-data?trade=Concrete&limit=10` |
@@ -864,3 +970,40 @@ Or set in `scope-gap-ui/config.py`:
 ```python
 API_BASE_URL = "https://ai5.ifieldsmart.com/construction"
 ```
+
+---
+
+## Recent Changes (2026-04-13)
+
+### Breaking Changes
+
+1. **POST /api/chat — `set_ids` now required when `generate_document=true`**
+   - Previously optional; now HTTP 422 is returned if `set_ids` is missing when `generate_document=true`.
+   - Error message: `"set_ids is required when generate_document is true"`
+
+2. **GET /api/documents/list — `project_id` now required**
+   - Previously optional; listing all documents without a project filter is no longer supported.
+   - Requests without `project_id` return HTTP 422.
+
+### New Features
+
+3. **POST /api/chat — `documents` array in ChatResponse**
+   - New field `documents: list[GeneratedDocument]` containing one document per `set_id`.
+   - `document` (singular) is retained for backward compatibility and always points to the first document.
+   - Each `GeneratedDocument` includes `set_id` and `set_name` fields.
+
+4. **POST /api/chat — `source_references` enriched**
+   - New `text` field: extracted text content from the primary annotation on a drawing.
+   - New `annotations` array: all text+coordinate pairs found on a drawing (each has `text`, `x`, `y`, `width`, `height`).
+
+5. **GET /api/documents/list — `set_name` filter and response fields**
+   - New optional `set_name` query parameter (partial match, case-insensitive).
+   - Response now includes `set_name` and `set_id` per document.
+
+6. **S3 path format changed**
+   - Old: `{agent}/generated_documents/{ProjectName}_{ProjectID}/{Trade}/{file}`
+   - New: `{agent}/generated_documents/{ProjectName}({ProjectID})/{SetName}({SetID})/{Trade}/{file}`
+   - The documents list endpoint handles both formats.
+
+7. **Document overwrite behavior**
+   - Regenerating a document for the same Project + Set + Trade overwrites the existing S3 file.
