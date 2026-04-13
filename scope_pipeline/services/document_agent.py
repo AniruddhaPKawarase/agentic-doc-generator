@@ -329,6 +329,7 @@ class DocumentAgent:
             "CSI Code",
             "CSI Division",
             "Trade",
+            "Confidence",
         ]
 
         with open(path, "w", newline="", encoding="utf-8") as f:
@@ -342,6 +343,7 @@ class DocumentAgent:
                     item.csi_code,
                     item.csi_division,
                     item.trade,
+                    getattr(item, "confidence", ""),
                 ])
 
         logger.info("CSV document saved: %s", path)

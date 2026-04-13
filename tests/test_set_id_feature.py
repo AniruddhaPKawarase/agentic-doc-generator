@@ -35,7 +35,7 @@ class TestChatRequestSetIds:
 
     def test_set_ids_defaults_to_none(self):
         from models.schemas import ChatRequest
-        req = ChatRequest(project_id=7298, query="create scope for electrical")
+        req = ChatRequest(project_id=7298, query="create scope for electrical", generate_document=False)
         assert req.set_ids is None
 
     def test_set_ids_accepts_int_list(self):
@@ -80,6 +80,7 @@ class TestChatRequestSetIds:
             project_id=7298,
             query="create scope for electrical",
             set_ids=None,
+            generate_document=False,
         )
         assert req.set_ids is None
 
@@ -307,7 +308,7 @@ class TestBackwardCompatibility:
             project_id=7276,
             query="Create a scope for plumbing",
             session_id=None,
-            generate_document=True,
+            generate_document=False,
         )
         assert req.set_ids is None
         assert req.project_id == 7276

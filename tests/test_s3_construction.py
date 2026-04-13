@@ -17,6 +17,14 @@ sys.path.insert(0, str(AGENT_ROOT))
 TEST_BUCKET = "test-vcs-agents"
 
 
+def _reset_s3_caches():
+    """Reset module-level S3 client and config caches."""
+    from s3_utils.config import get_s3_config
+    import s3_utils.client as _client_mod
+    get_s3_config.cache_clear()
+    _client_mod._s3_client = None
+
+
 @pytest.fixture(autouse=True)
 def s3_env(monkeypatch):
     monkeypatch.setenv("STORAGE_BACKEND", "s3")
@@ -26,24 +34,17 @@ def s3_env(monkeypatch):
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
     monkeypatch.setenv("S3_AGENT_PREFIX", "construction-intelligence-agent")
     monkeypatch.setenv("S3_ENDPOINT_URL", "")
-    from s3_utils.config import get_s3_config
-    from s3_utils.client import get_s3_client
-    get_s3_config.cache_clear()
-    get_s3_client.cache_clear()
+    _reset_s3_caches()
 
 
 @pytest.fixture
 def s3_bucket():
     with mock_aws():
-        from s3_utils.config import get_s3_config
-        from s3_utils.client import get_s3_client
-        get_s3_config.cache_clear()
-        get_s3_client.cache_clear()
+        _reset_s3_caches()
         conn = boto3.client("s3", region_name="us-east-1")
         conn.create_bucket(Bucket=TEST_BUCKET)
         yield conn
-        get_s3_config.cache_clear()
-        get_s3_client.cache_clear()
+        _reset_s3_caches()
 
 
 class TestDocumentS3Upload:
@@ -55,7 +56,7 @@ class TestDocumentS3Upload:
         doc_file = tmp_path / "scope_electrical_Granville_7298_abc12345.docx"
         doc_file.write_bytes(b"PK fake docx content for testing")
         s3_key = generated_document_key(
-            "construction-intelligence-agent", "Granville", 7298, "Electrical", doc_file.name
+            "construction-intelligence-agent", "Granville", 7298, "Foundation Plans", 4730, "Electrical", doc_file.name
         )
         assert upload_file(str(doc_file), s3_key) is True
         assert object_exists(s3_key) is True
@@ -66,7 +67,7 @@ class TestDocumentS3Upload:
         doc_file = tmp_path / "Exhibit_GranvilleHotel_Electrical_scope_7298_e5f6g7h8.docx"
         doc_file.write_bytes(b"PK fake exhibit content")
         s3_key = generated_document_key(
-            "construction-intelligence-agent", "GranvilleHotel", 7298, "Electrical", doc_file.name
+            "construction-intelligence-agent", "GranvilleHotel", 7298, "Foundation Plans", 4730, "Electrical", doc_file.name
         )
         assert upload_file(str(doc_file), s3_key) is True
         assert object_exists(s3_key) is True
@@ -74,9 +75,9 @@ class TestDocumentS3Upload:
     def test_s3_key_structure(self):
         from s3_utils.helpers import generated_document_key
         key = generated_document_key(
-            "construction-intelligence-agent", "Granville Hotel", 7298, "HVAC / Mechanical", "doc.docx"
+            "construction-intelligence-agent", "Granville Hotel", 7298, "HVAC Plans", 4730, "HVAC / Mechanical", "doc.docx"
         )
-        assert key == "construction-intelligence-agent/generated_documents/Granville_Hotel_7298/HVAC_Mechanical/doc.docx"
+        assert key == "construction-intelligence-agent/generated_documents/Granville_Hotel(7298)/HVAC_Plans(4730)/HVAC_Mechanical/doc.docx"
 
     def test_upload_preserves_local_on_s3_failure(self, tmp_path):
         """When S3 is unavailable, local file must still exist."""
@@ -177,18 +178,13 @@ class TestRollback:
 
     def test_s3_client_returns_none_in_local_mode(self, monkeypatch):
         monkeypatch.setenv("STORAGE_BACKEND", "local")
-        from s3_utils.config import get_s3_config
+        _reset_s3_caches()
         from s3_utils.client import get_s3_client
-        get_s3_config.cache_clear()
-        get_s3_client.cache_clear()
         assert get_s3_client() is None
 
     def test_operations_return_false_in_local_mode(self, monkeypatch):
         monkeypatch.setenv("STORAGE_BACKEND", "local")
-        from s3_utils.config import get_s3_config
-        from s3_utils.client import get_s3_client
-        get_s3_config.cache_clear()
-        get_s3_client.cache_clear()
+        _reset_s3_caches()
         from s3_utils.operations import upload_bytes, download_bytes, list_objects
         assert upload_bytes(b"test", "key") is False
         assert download_bytes("key") is None
