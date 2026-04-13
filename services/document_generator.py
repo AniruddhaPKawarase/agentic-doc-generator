@@ -49,6 +49,8 @@ class DocumentGenerator:
         title: str = None,
         set_ids: list = None,
         set_names: list = None,
+        set_name: str = "",
+        set_id: int = 0,
         source_index: dict = None,
     ) -> GeneratedDocument:
         """
@@ -69,6 +71,8 @@ class DocumentGenerator:
             title=title,
             set_ids=set_ids,
             set_names=set_names,
+            set_name=set_name,
+            set_id=set_id,
             source_index=source_index,
         )
 
@@ -82,6 +86,8 @@ class DocumentGenerator:
         title: str = None,
         set_ids: list = None,
         set_names: list = None,
+        set_name: str = "",
+        set_id: int = 0,
         source_index: dict = None,
     ) -> GeneratedDocument:
         """
@@ -120,7 +126,7 @@ class DocumentGenerator:
             import tempfile
             import sys as _sys
             _sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-            from s3_utils.operations import upload_file
+            from s3_utils.operations import upload_file, delete_prefix
             from s3_utils.helpers import generated_document_key
 
             # Save to temp file (python-docx needs a file path)
@@ -133,9 +139,19 @@ class DocumentGenerator:
                 settings.s3_agent_prefix,
                 project_name,
                 project_id,
+                set_name,
+                set_id,
                 trade,
                 filename,
             )
+            # Overwrite: delete existing docs in this Project/Set/Trade folder
+            folder_prefix = "/".join(s3_key.split("/")[:-1]) + "/"
+            try:
+                deleted = delete_prefix(folder_prefix)
+                if deleted > 0:
+                    logger.info("Overwrite: deleted %d old docs from %s", deleted, folder_prefix)
+            except Exception as e:
+                logger.warning("Failed to delete old docs at %s: %s", folder_prefix, e)
             upload_ok = upload_file(str(tmp_path), s3_key)
             if upload_ok:
                 logger.info(
@@ -232,12 +248,12 @@ class DocumentGenerator:
             return
         doc.add_page_break()
         doc.add_heading("Source Reference Table", level=2)
-        table = doc.add_table(rows=1, cols=4)
+        table = doc.add_table(rows=1, cols=5)
         try:
             table.style = "Light Grid Accent 1"
         except KeyError:
             table.style = "Table Grid"
-        headers = ["Drawing Name", "Drawing Title", "PDF Link", "Coordinates"]
+        headers = ["Drawing Name", "Drawing Title", "Text", "PDF Link", "Coordinates"]
         for i, h in enumerate(headers):
             table.rows[0].cells[i].text = h
         for ref in sorted(source_index.values(), key=lambda r: r.drawing_name):
@@ -248,21 +264,19 @@ class DocumentGenerator:
             else:
                 p.text = ref.drawing_name
             row[1].text = ref.drawing_title
-            p2 = row[2].paragraphs[0]
+            row[2].text = (ref.text[:100] + "...") if len(ref.text) > 100 else ref.text
+            p2 = row[3].paragraphs[0]
             if ref.s3_url:
                 self._add_hyperlink(p2, ref.s3_url, "View PDF")
             else:
                 p2.text = "N/A"
             if ref.x is not None and ref.y is not None:
                 size = f" {ref.width}x{ref.height}" if ref.width is not None and ref.height is not None else ""
-                row[3].text = f"({ref.x}, {ref.y}){size}"
+                row[4].text = f"({ref.x}, {ref.y}){size}"
             else:
-                row[3].text = "\u2014"
+                row[4].text = "\u2014"
         hyperlink_count = sum(1 for ref in source_index.values() if ref.s3_url)
-        logger.info(
-            "Traceability table: %d drawings, %d hyperlinks",
-            len(source_index), hyperlink_count,
-        )
+        logger.info("Traceability table: %d drawings, %d hyperlinks", len(source_index), hyperlink_count)
 
     # ── Document structure builders ───────────────────────────────
 
