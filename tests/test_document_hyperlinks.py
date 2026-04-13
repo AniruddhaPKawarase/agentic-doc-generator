@@ -19,18 +19,21 @@ from services.source_index import SourceReference
 
 
 def _make_source_index() -> dict[str, SourceReference]:
+    from services.source_index import Annotation
     return {
         "A102": SourceReference(
             drawing_id=318845, drawing_name="A102",
             drawing_title="ARCH SITE PLAN",
             s3_url="https://bucket.s3.amazonaws.com/path/pdf.pdf",
             pdf_name="pdfA102", x=100, y=200, width=50, height=30,
+            text="", annotations=(),
         ),
         "E-101": SourceReference(
             drawing_id=12345, drawing_name="E-101",
             drawing_title="ELECTRICAL FLOOR PLAN",
             s3_url="https://bucket.s3.amazonaws.com/path2/pdf2.pdf",
             pdf_name="pdfE101", x=300, y=400, width=60, height=40,
+            text="", annotations=(),
         ),
     }
 

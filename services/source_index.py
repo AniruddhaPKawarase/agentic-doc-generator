@@ -1,7 +1,8 @@
 """
 services/source_index.py -- Builds source reference index from API records.
 
-Extracts drawingId, s3BucketPath, pdfName, coordinates from raw API records.
+Extracts drawingId, s3BucketPath, pdfName, coordinates, and text from raw API records.
+Groups multiple records per drawing into an annotations array.
 Used by document generators for hyperlinks and traceability tables.
 """
 
@@ -20,13 +21,9 @@ _ALLOWED_S3_PREFIXES = ("ifieldsmart/", "agentic-ai-production/")
 
 
 @dataclass(frozen=True, slots=True)
-class SourceReference:
-    """Immutable source reference for a single drawing."""
-    drawing_id: int
-    drawing_name: str
-    drawing_title: str
-    s3_url: str
-    pdf_name: str
+class Annotation:
+    """Single text annotation with coordinates on a drawing."""
+    text: str
     x: int | None
     y: int | None
     width: int | None
@@ -36,53 +33,100 @@ class SourceReference:
         return asdict(self)
 
 
+@dataclass(frozen=True, slots=True)
+class SourceReference:
+    """Immutable source reference for a single drawing with all annotations."""
+    drawing_id: int
+    drawing_name: str
+    drawing_title: str
+    s3_url: str
+    pdf_name: str
+    x: int | None
+    y: int | None
+    width: int | None
+    height: int | None
+    text: str
+    annotations: tuple[Annotation, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "drawing_id": self.drawing_id,
+            "drawing_name": self.drawing_name,
+            "drawing_title": self.drawing_title,
+            "s3_url": self.s3_url,
+            "pdf_name": self.pdf_name,
+            "x": self.x,
+            "y": self.y,
+            "width": self.width,
+            "height": self.height,
+            "text": self.text,
+            "annotations": [a.to_dict() for a in self.annotations],
+        }
+
+
 class SourceIndexBuilder:
-    """Builds a source index from deduplicated API records."""
+    """Builds a source index from API records, grouping by drawing."""
 
     def build(self, records: list[dict]) -> tuple[dict[str, SourceReference], dict[str, Any]]:
         start = time.perf_counter()
-        index: dict[str, SourceReference] = {}
-        warnings: list[str] = []
-        seen: set[str] = set()
 
+        by_drawing: dict[str, list[dict]] = {}
         for rec in records:
             dn = (rec.get("drawingName") or "").strip()
-            if not dn or dn in seen:
-                continue
-            seen.add(dn)
+            if dn:
+                by_drawing.setdefault(dn, []).append(rec)
 
-            s3_path_raw = rec.get("s3BucketPath", "")
-            pdf_name = rec.get("pdfName", "")
+        index: dict[str, SourceReference] = {}
+        warnings: list[str] = []
 
-            if not s3_path_raw or not pdf_name:
+        for dn, group in by_drawing.items():
+            s3_url = ""
+            pdf_name = ""
+            drawing_id = 0
+            drawing_title = ""
+
+            for rec in group:
+                s3_path_raw = rec.get("s3BucketPath", "")
+                pn = rec.get("pdfName", "")
+                if s3_path_raw and pn:
+                    s3_path = self._sanitize_s3_path(s3_path_raw)
+                    safe_pdf = self._sanitize_pdf_name(pn)
+                    if s3_path and safe_pdf:
+                        s3_url = self._build_s3_url(s3_path, safe_pdf)
+                        pdf_name = pn
+                        drawing_id = self._safe_drawing_id(rec.get("drawingId"))
+                        drawing_title = rec.get("drawingTitle", "")
+                        break
+
+            if not s3_url:
                 warnings.append(dn)
                 continue
 
-            s3_path = self._sanitize_s3_path(s3_path_raw)
-            if not s3_path:
-                logger.warning("Invalid S3 path for drawing %s: %s", dn, s3_path_raw)
-                warnings.append(dn)
-                continue
+            annotations: list[Annotation] = []
+            for rec in group:
+                text = (rec.get("text") or "").strip()
+                x, y, w, h = self._validate_coordinates(rec)
+                if text:
+                    annotations.append(Annotation(text=text, x=x, y=y, width=w, height=h))
 
-            safe_pdf = self._sanitize_pdf_name(pdf_name)
-            if not safe_pdf:
-                logger.warning("Invalid pdfName for drawing %s: %s", dn, pdf_name)
-                warnings.append(dn)
-                continue
+            if annotations:
+                first = annotations[0]
+            else:
+                first = Annotation(text="", x=None, y=None, width=None, height=None)
 
-            x, y, w, h = self._validate_coordinates(rec)
             index[dn] = SourceReference(
-                drawing_id=self._safe_drawing_id(rec.get("drawingId")),
+                drawing_id=drawing_id,
                 drawing_name=dn,
-                drawing_title=rec.get("drawingTitle", ""),
-                s3_url=self._build_s3_url(s3_path, safe_pdf),
+                drawing_title=drawing_title,
+                s3_url=s3_url,
                 pdf_name=pdf_name,
-                x=x, y=y, width=w, height=h,
+                x=first.x,
+                y=first.y,
+                width=first.width,
+                height=first.height,
+                text=first.text,
+                annotations=tuple(annotations),
             )
-
-        pre_recovery = len(index)
-        index = self._recover_missing_sources(records, index)
-        recovered = len(index) - pre_recovery
 
         build_ms = int((time.perf_counter() - start) * 1000)
         if warnings:
@@ -90,15 +134,13 @@ class SourceIndexBuilder:
 
         metadata = {
             "drawings_total": len(index),
-            "drawings_missing": max(0, len(warnings) - recovered),
-            "recovery_count": recovered,
+            "drawings_missing": len(warnings),
             "build_ms": build_ms,
         }
         return index, metadata
 
     @staticmethod
     def _safe_drawing_id(val: Any) -> int:
-        """Extract drawingId as int. Returns 0 on non-numeric values."""
         if val is None:
             return 0
         try:
@@ -115,7 +157,6 @@ class SourceIndexBuilder:
 
     @staticmethod
     def _sanitize_pdf_name(name: str) -> str | None:
-        """Validate and sanitize pdfName. Reject traversal and control chars."""
         if not name or ".." in name or "\x00" in name or "/" in name or "\\" in name:
             return None
         return quote(name, safe="")
@@ -139,33 +180,3 @@ class SourceIndexBuilder:
             _safe_int(record.get("width")),
             _safe_int(record.get("height")),
         )
-
-    def _recover_missing_sources(self, records: list[dict], index: dict[str, SourceReference]) -> dict[str, SourceReference]:
-        by_drawing: dict[str, list[dict]] = {}
-        for rec in records:
-            dn = (rec.get("drawingName") or "").strip()
-            if dn:
-                by_drawing.setdefault(dn, []).append(rec)
-
-        recovered: dict[str, SourceReference] = {}
-        for dn, group in by_drawing.items():
-            if dn in index:
-                continue
-            for rec in group:
-                s3_path = rec.get("s3BucketPath", "")
-                pdf_name = rec.get("pdfName", "")
-                if s3_path and pdf_name:
-                    sanitized = self._sanitize_s3_path(s3_path)
-                    safe_pdf = self._sanitize_pdf_name(pdf_name)
-                    if sanitized and safe_pdf:
-                        x, y, w, h = self._validate_coordinates(rec)
-                        recovered[dn] = SourceReference(
-                            drawing_id=self._safe_drawing_id(rec.get("drawingId")),
-                            drawing_name=dn,
-                            drawing_title=rec.get("drawingTitle", ""),
-                            s3_url=self._build_s3_url(sanitized, safe_pdf),
-                            pdf_name=pdf_name,
-                            x=x, y=y, width=w, height=h,
-                        )
-                        break
-        return {**index, **recovered}

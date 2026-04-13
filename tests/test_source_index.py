@@ -82,7 +82,8 @@ class TestSourceIndexBuilder:
         index, meta = builder.build([rec_a, rec_b])
         assert "X-1" in index
         assert index["X-1"].drawing_id == 999
-        assert meta["recovery_count"] == 1
+        # new build() groups all records per drawing; recovery is built-in (no separate count)
+        assert meta["drawings_total"] == 1
 
     def test_path_traversal_blocked(self):
         from services.source_index import SourceIndexBuilder
@@ -157,6 +158,7 @@ class TestSourceIndexBuilder:
             drawing_id=1, drawing_name="A1", drawing_title="Title",
             s3_url="https://example.com", pdf_name="pdf1",
             x=10, y=20, width=100, height=50,
+            text="", annotations=(),
         )
         d = ref.to_dict()
         assert d["drawing_id"] == 1
@@ -168,6 +170,7 @@ class TestSourceIndexBuilder:
         ref = SourceReference(
             drawing_id=1, drawing_name="A1", drawing_title="T",
             s3_url="u", pdf_name="p", x=0, y=0, width=0, height=0,
+            text="", annotations=(),
         )
         with pytest.raises(AttributeError):
             ref.drawing_id = 999
