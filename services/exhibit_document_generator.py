@@ -100,6 +100,8 @@ class ExhibitDocumentGenerator:
         drawing_summary: Optional[list[dict]] = None,
         title: Optional[str] = None,
         source_index: dict = None,
+        set_name: str = "",
+        set_id: int = 0,
     ) -> GeneratedDocument:
         return await asyncio.to_thread(
             self.generate_sync,
@@ -110,6 +112,8 @@ class ExhibitDocumentGenerator:
             drawing_summary=drawing_summary,
             title=title,
             source_index=source_index,
+            set_name=set_name,
+            set_id=set_id,
         )
 
     # ── Synchronous builder ────────────────────────────────────────
@@ -125,6 +129,8 @@ class ExhibitDocumentGenerator:
         # project_id used for filename and GeneratedDocument metadata
         project_id: int = 0,
         source_index: dict = None,
+        set_name: str = "",
+        set_id: int = 0,
     ) -> GeneratedDocument:
         # Resolve display name
         if project_id and not project_name:
@@ -168,9 +174,20 @@ class ExhibitDocumentGenerator:
                 settings.s3_agent_prefix,
                 project_name,
                 project_id,
+                set_name,
+                set_id,
                 trade,
                 filename,
             )
+            # Overwrite: delete existing exhibit docs in this folder
+            folder_prefix = "/".join(s3_key.split("/")[:-1]) + "/"
+            try:
+                from s3_utils.operations import delete_prefix
+                deleted = delete_prefix(folder_prefix)
+                if deleted > 0:
+                    logger.info("Overwrite: deleted %d old exhibit docs from %s", deleted, folder_prefix)
+            except Exception as e:
+                logger.warning("Failed to delete old exhibit docs at %s: %s", folder_prefix, e)
             upload_ok = upload_file(str(tmp_path), s3_key)
             if upload_ok:
                 logger.info(
