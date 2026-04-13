@@ -1,0 +1,34 @@
+{
+  "test_date": "2026-04-13",
+  "sandbox": {
+    "session_id": "df72ac50-0b5a-479e-92be-42d0b6165dba",
+    "project_name": "SINGH RESIDENCE (ID: 7276)",
+    "pipeline_ms": 67447,
+    "total_tokens": "N/A",
+    "source_refs_count": 17,
+    "annotations_present": true,
+    "response_summary": {
+      "answer_length": 16603,
+      "has_drawing_numbers": true,
+      "has_csi_divisions": true
+    }
+  },
+  "production": {
+    "session_id": "5e2b3433-246f-4086-a8f1-100cb7dd1a7a",
+    "project_name": "SINGH RESIDENCE (ID: 7276)",
+    "pipeline_ms": 68001,
+    "total_tokens": "N/A",
+    "source_refs_count": 17,
+    "annotations_present": true,
+    "response_summary": {
+      "answer_length": 15990,
+      "has_drawing_numbers": true,
+      "has_csi_divisions": true
+    }
+  },
+  "comparison": {
+    "pipeline_ms_diff": 554,
+    "source_refs_diff": 0,
+    "sandbox_faster": true
+  }
+}
