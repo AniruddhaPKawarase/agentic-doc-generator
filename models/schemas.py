@@ -7,7 +7,7 @@ Data flow: API responses → DrawingRecord → filtered context → LLM → Chat
 from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 import uuid
 
 
@@ -163,10 +163,14 @@ class ChatRequest(BaseModel):
     generate_document: bool = Field(True, description="Whether to generate a .docx file")
     set_ids: Optional[list[Union[int, str]]] = Field(
         None,
-        description="Optional list of set IDs to filter drawings. "
-                    "Uses summaryByTradeAndSet API when provided. "
-                    "Omit or pass null to use summaryByTrade (existing behavior).",
+        description="List of set IDs to filter drawings. Required when generate_document is true.",
     )
+
+    @model_validator(mode="after")
+    def validate_set_ids_for_document(self):
+        if self.generate_document and not self.set_ids:
+            raise ValueError("set_ids is required when generate_document is true")
+        return self
 
 
 class ChatResponse(BaseModel):
@@ -177,6 +181,10 @@ class ChatResponse(BaseModel):
     set_ids: Optional[list[Union[int, str]]] = Field(None, description="Set IDs used for filtering (echo of request)")
     set_names: list[str] = Field(default_factory=list, description="Set names extracted from API response")
     document: Optional[GeneratedDocument] = None
+    documents: list[GeneratedDocument] = Field(
+        default_factory=list,
+        description="All generated documents (one per set_id when multiple sets requested)",
+    )
     intent: Optional[IntentResult] = None
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
     groundedness_score: float = 0.0
@@ -198,7 +206,7 @@ class ChatResponse(BaseModel):
     # ── Source references (v4 API migration) ─────────────────
     source_references: dict[str, dict] = Field(
         default_factory=dict,
-        description="Map of drawingName -> {drawing_id, s3_url, pdf_name, x, y, width, height}",
+        description="Map of drawingName -> {drawing_id, s3_url, pdf_name, x, y, width, height, text, annotations[]}",
     )
     api_version: str = Field(
         "",
