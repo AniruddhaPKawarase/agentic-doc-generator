@@ -609,10 +609,10 @@ Content-Type: application/json
     "accuracy_score": 0.95
   },
   "documents": {
-    "word_path": "./generated_docs/7276_Singh_Residence_Doors_Scope_of_Work.docx",
-    "pdf_path": "./generated_docs/7276_Singh_Residence_Doors_Scope_of_Work.pdf",
-    "csv_path": "./generated_docs/7276_Singh_Residence_Doors_Scope_of_Work.csv",
-    "json_path": "./generated_docs/7276_Singh_Residence_Doors_Scope_of_Work.json"
+    "word_path": "https://ai.ifieldsmart.com/construction/api/documents/a1b2c3d4/download",
+    "pdf_path": "https://ai.ifieldsmart.com/construction/api/documents/e5f6g7h8/download",
+    "csv_path": "https://ai.ifieldsmart.com/construction/api/documents/i9j0k1l2/download",
+    "json_path": "https://ai.ifieldsmart.com/construction/api/documents/m3n4o5p6/download"
   },
   "pipeline_stats": {
     "total_ms": 45000,
@@ -973,7 +973,32 @@ API_BASE_URL = "https://ai5.ifieldsmart.com/construction"
 
 ---
 
-## Recent Changes (2026-04-13)
+## Recent Changes (2026-04-15)
+
+### Scope Gap Pipeline — S3 Document Persistence
+
+8. **POST /api/scope-gap/generate — `documents` field now returns download URLs**
+   - Previously returned local file paths (e.g., `./generated_docs/...`) which were inaccessible from the frontend.
+   - Now returns download URLs compatible with `GET /api/documents/{file_id}/download`.
+   - All 4 formats (DOCX, PDF, CSV, JSON) are uploaded to S3 on generation.
+   - S3 folder structure: `{agent}/generated_documents/{ProjectName}({ProjectID})/{Set}({SetID})/{Trade}/{file}`
+   - Each filename includes a unique 8-char file ID for download API resolution.
+   - Old files for the same Project + Set + Trade are overwritten on regeneration.
+   - `GET /api/documents/list?project_id=X` now also returns scope gap pipeline documents.
+
+9. **Fix: JSON document generation restored**
+   - `documents.json_path` was previously `null` due to a crash when `quality=None` (caused by parallel quality‖document execution in the 2026-04-12 optimization).
+   - JSON file is now generated successfully with `quality: null` when quality data is not yet available.
+
+10. **No breaking changes**
+    - API response shape (`ScopeGapResult`) is unchanged — same fields, same types.
+    - `documents.*_path` values changed from local paths to download URLs (string → string, no type change).
+    - Chat pipeline (`POST /api/chat`) is completely unaffected.
+    - Existing document listing and download endpoints work without modification.
+
+---
+
+## Previous Changes (2026-04-13)
 
 ### Breaking Changes
 

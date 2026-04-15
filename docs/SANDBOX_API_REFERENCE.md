@@ -3,7 +3,7 @@
 **Sandbox VM:** `54.197.189.113`
 **Protocol:** HTTP (no SSL, no Nginx)
 **Access pattern:** `http://54.197.189.113:{port}`
-**Deployed:** Latency Optimization v4 (2026-04-12)
+**Deployed:** S3 Scope Gap Documents + Latency Optimization v4 (2026-04-15)
 
 > For full endpoint documentation (request bodies, response schemas, field tables), see [PRODUCTION_API_REFERENCE.md](./PRODUCTION_API_REFERENCE.md). This document covers sandbox-specific URLs and service topology only. Replace any `https://ai5.ifieldsmart.com/construction` URL with `http://54.197.189.113:8003` for the construction agent, or the appropriate port for other agents.
 
@@ -101,7 +101,17 @@ Replace `https://ai5.ifieldsmart.com/construction` → `http://54.197.189.113:80
 | 22 | PATCH | `/api/scope-gap/highlights/{id}` |
 | 23 | DELETE | `/api/scope-gap/highlights/{id}` |
 
-### Breaking Changes in This Release (2026-04-13)
+### Changes in This Release (2026-04-15)
+
+**POST /api/scope-gap/generate — S3 document persistence**
+- `documents` field now returns download URLs (e.g., `https://ai.ifieldsmart.com/construction/api/documents/{file_id}/download`) instead of local paths.
+- All 4 formats (DOCX, PDF, CSV, JSON) uploaded to S3 on generation.
+- `GET /api/documents/list?project_id=X` now also returns scope gap documents.
+- Fix: `documents.json_path` was `null` (quality=None crash) — now generates correctly.
+
+**No breaking changes** — API response shape is identical, only `documents.*_path` values changed from local paths to download URLs.
+
+### Previous Breaking Changes (2026-04-13)
 
 **POST /api/chat**
 - `set_ids` is now **required** when `generate_document=true`. Omitting it returns HTTP 422: `"set_ids is required when generate_document is true"`.
@@ -205,7 +215,7 @@ Run in order to verify the full stack is healthy before promoting to production.
 | Protocol | HTTP | HTTPS (TLS 1.2+) |
 | Routing | Direct port access | Nginx reverse proxy → port 8003 |
 | Base URL | `http://54.197.189.113:{port}` | `https://ai5.ifieldsmart.com/construction` |
-| Build | 2026-04-13 release (set_ids required, documents array, annotations) | Same — both on 2026-04-13 release |
+| Build | 2026-04-15 release (S3 scope gap docs, set_ids required, documents array) | Same — both on 2026-04-15 release |
 | SSL cert | None | Let's Encrypt |
 | Domain | None | ai5.ifieldsmart.com |
 
