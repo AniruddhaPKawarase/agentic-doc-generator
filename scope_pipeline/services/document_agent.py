@@ -19,7 +19,8 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional, Union
+from uuid import uuid4
 
 from scope_pipeline.models import (
     AmbiguityItem,
@@ -74,16 +75,18 @@ def _build_filename(
     project_id: int,
     trade: str,
     ext: str,
+    file_id: str = "",
 ) -> str:
-    """Build a professional filename.
+    """Build a professional filename with unique ID for download API.
 
-    Example: ``7276_Singh_Residence_Concrete_Scope_of_Work.docx``
+    Example: ``7276_Singh_Residence_Concrete_Scope_of_Work_a1b2c3d4.docx``
     """
     slug = re.sub(r"[^\w\s-]", "", project_name).strip()
     slug = re.sub(r"\s+", "_", slug).title()
     trade_slug = re.sub(r"[^\w\s-]", "", trade).strip()
     trade_slug = re.sub(r"\s+", "_", trade_slug).title()
-    return f"{project_id}_{slug}_{trade_slug}_Scope_of_Work.{ext}"
+    id_suffix = f"_{file_id[:8]}" if file_id else ""
+    return f"{project_id}_{slug}_{trade_slug}_Scope_of_Work{id_suffix}.{ext}"
 
 
 def _group_items_by_drawing(
@@ -106,6 +109,11 @@ class DocumentAgent:
     def __init__(self, docs_dir: str = "./generated_docs") -> None:
         self._docs_dir = docs_dir
         os.makedirs(self._docs_dir, exist_ok=True)
+        try:
+            from config import get_settings
+            self._settings = get_settings()
+        except Exception:
+            self._settings = None
 
     async def generate_all(
         self,
@@ -120,8 +128,15 @@ class DocumentAgent:
         stats: PipelineStats,
         project_location: str = "",
         drawing_s3_urls: dict[str, str] | None = None,
+        set_name: str = "",
+        set_id: int = 0,
     ) -> DocumentSet:
-        """Generate all 4 document formats in parallel. Returns DocumentSet."""
+        """Generate all 4 document formats in parallel. Returns DocumentSet.
+
+        When STORAGE_BACKEND=s3, uploads generated files to S3 and returns
+        download URLs compatible with ``GET /api/documents/{file_id}/download``.
+        When STORAGE_BACKEND=local (or settings unavailable), returns local paths.
+        """
         common_kwargs: dict[str, Any] = dict(
             items=items,
             ambiguities=ambiguities,
@@ -136,17 +151,21 @@ class DocumentAgent:
             drawing_s3_urls=drawing_s3_urls or {},
         )
 
+        # Generate a unique file_id per format for download API resolution
+        exts = ["docx", "pdf", "csv", "json"]
+        file_ids = {ext: uuid4().hex for ext in exts}
+
         word_path = os.path.join(
-            self._docs_dir, _build_filename(project_name, project_id, trade, "docx"),
+            self._docs_dir, _build_filename(project_name, project_id, trade, "docx", file_ids["docx"]),
         )
         pdf_path = os.path.join(
-            self._docs_dir, _build_filename(project_name, project_id, trade, "pdf"),
+            self._docs_dir, _build_filename(project_name, project_id, trade, "pdf", file_ids["pdf"]),
         )
         csv_path = os.path.join(
-            self._docs_dir, _build_filename(project_name, project_id, trade, "csv"),
+            self._docs_dir, _build_filename(project_name, project_id, trade, "csv", file_ids["csv"]),
         )
         json_path = os.path.join(
-            self._docs_dir, _build_filename(project_name, project_id, trade, "json"),
+            self._docs_dir, _build_filename(project_name, project_id, trade, "json", file_ids["json"]),
         )
 
         word_task = asyncio.to_thread(self.generate_word_sync, word_path, **common_kwargs)
@@ -158,14 +177,97 @@ class DocumentAgent:
             word_task, pdf_task, csv_task, json_task, return_exceptions=True,
         )
 
-        doc_set = DocumentSet()
+        # Collect successfully generated files: attr -> (local_path, file_id)
         paths = [word_path, pdf_path, csv_path, json_path]
         attrs = ["word_path", "pdf_path", "csv_path", "json_path"]
-        for result, path, attr in zip(results, paths, attrs):
+        generated: dict[str, tuple[str, str]] = {}
+        for result, path, attr, ext in zip(results, paths, attrs, exts):
             if isinstance(result, Exception):
                 logger.error("Document generation failed for %s: %s", attr, result)
             else:
-                setattr(doc_set, attr, path)
+                generated[attr] = (path, file_ids[ext])
+
+        # S3 mode: upload files and return download URLs
+        use_s3 = (
+            self._settings is not None
+            and getattr(self._settings, "storage_backend", "local") == "s3"
+        )
+        if use_s3:
+            return await self._upload_to_s3(
+                generated, project_name, project_id, set_name, set_id, trade,
+            )
+
+        # Local mode: return local file paths (backward compatible)
+        doc_set = DocumentSet()
+        for attr, (path, _fid) in generated.items():
+            setattr(doc_set, attr, path)
+        return doc_set
+
+    # ------------------------------------------------------------------
+    # S3 upload
+    # ------------------------------------------------------------------
+
+    async def _upload_to_s3(
+        self,
+        generated: dict[str, tuple[str, str]],
+        project_name: str,
+        project_id: int,
+        set_name: str,
+        set_id: int,
+        trade: str,
+    ) -> DocumentSet:
+        """Upload generated files to S3 and return DocumentSet with download URLs."""
+        from s3_utils.operations import upload_file, delete_prefix
+        from s3_utils.helpers import generated_document_key
+
+        settings = self._settings
+        docs_base_url = getattr(settings, "docs_base_url", "")
+        agent_prefix = getattr(settings, "s3_agent_prefix", "construction-intelligence-agent")
+
+        # Build the S3 folder prefix and clear old docs for this project/set/trade
+        sample_key = generated_document_key(
+            agent_prefix, project_name, project_id,
+            set_name, set_id, trade, "placeholder",
+        )
+        folder_prefix = "/".join(sample_key.split("/")[:-1]) + "/"
+        try:
+            deleted = await asyncio.to_thread(delete_prefix, folder_prefix)
+            if deleted > 0:
+                logger.info(
+                    "Overwrite: deleted %d old scope docs from %s", deleted, folder_prefix,
+                )
+        except Exception as exc:
+            logger.warning("Failed to delete old scope docs at %s: %s", folder_prefix, exc)
+
+        # Upload each file in parallel
+        doc_set = DocumentSet()
+
+        async def _upload_one(attr: str, local_path: str, file_id: str) -> None:
+            filename = os.path.basename(local_path)
+            s3_key = generated_document_key(
+                agent_prefix, project_name, project_id,
+                set_name, set_id, trade, filename,
+            )
+            ok = await asyncio.to_thread(upload_file, local_path, s3_key)
+            if ok:
+                download_url = f"{docs_base_url}/{file_id[:8]}/download"
+                setattr(doc_set, attr, download_url)
+                logger.info("S3 upload OK: %s → %s", filename, s3_key)
+                # Clean up local temp file — S3 is the single source of truth
+                try:
+                    os.unlink(local_path)
+                except OSError:
+                    pass
+            else:
+                # Fallback: keep local path if S3 upload fails
+                setattr(doc_set, attr, local_path)
+                logger.error("S3 upload FAILED for %s — keeping local copy", filename)
+
+        upload_tasks = [
+            _upload_one(attr, local_path, file_id)
+            for attr, (local_path, file_id) in generated.items()
+        ]
+        await asyncio.gather(*upload_tasks)
 
         return doc_set
 
@@ -372,9 +474,9 @@ class DocumentAgent:
             "items": [item.model_dump() for item in items],
             "ambiguities": [amb.model_dump() for amb in ambiguities],
             "gotchas": [gtc.model_dump() for gtc in gotchas],
-            "completeness": completeness.model_dump(),
-            "quality": quality.model_dump(),
-            "pipeline_stats": stats.model_dump(),
+            "completeness": completeness.model_dump() if completeness else None,
+            "quality": quality.model_dump() if quality else None,
+            "pipeline_stats": stats.model_dump() if stats else None,
         }
 
         with open(path, "w", encoding="utf-8") as f:

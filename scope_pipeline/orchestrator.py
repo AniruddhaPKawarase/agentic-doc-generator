@@ -346,6 +346,9 @@ class ScopeGapPipeline:
         )
 
         quality_task = self._quality.run(final_merged, emitter)
+
+        # Derive set_id for S3 folder structure from request.set_ids
+        _set_id = int(request.set_ids[0]) if request.set_ids else 0
         document_task = self._document.generate_all(
             items=final_classified,
             ambiguities=ambiguities,
@@ -358,6 +361,8 @@ class ScopeGapPipeline:
             trade=request.trade,
             stats=pipeline_stats,
             drawing_s3_urls=drawing_s3_urls,
+            set_name="",
+            set_id=_set_id,
         )
 
         quality_result, documents = await asyncio.gather(
